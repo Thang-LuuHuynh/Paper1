@@ -1,0 +1,30 @@
+{
+  "controller": "BSMC",
+  "trajectory": "square",
+  "run_id": "square_bsmc_pull_r01",
+  "csv": "/home/thang/Paper1/paper_runs/square_pull_test/20260720_201616_square_BSMC_square_bsmc_pull_r01.csv",
+  "n_total": 2164,
+  "n_metric": 1962,
+  "valid": true,
+  "camera_max_age_s": 0.3,
+  "requested_laps": 1.0,
+  "parameters": {
+    "k1": 0.8,
+    "k2_straight": 6.0,
+    "k3_straight": 7.0,
+    "ks1": 0.08,
+    "ks2": 0.1,
+    "phi1": 1.0,
+    "phi2": 1.5,
+    "side_length_m": 2.0,
+    "desired_speed_m_s": 0.1,
+    "max_v_m_s": 0.18,
+    "max_w_rad_s": 0.85
+  },
+  "trajectory_figure_frame": "world",
+  "trajectory_figure_rotation_deg": 0.0,
+  "camera_rmse_ex_m": 0.008668583549748352,
+  "camera_rmse_ey_m": 0.03235161959472276,
+  "camera_rmse_heading_deg": 9.464348666811519,
+  "camera_rmse_position_m": 0.03349285940556013
+}

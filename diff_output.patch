@@ -1,0 +1,592 @@
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/position.yaml Paper1-main/position.yaml
+--- Paper1-cu/position.yaml	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/position.yaml	2026-07-22 18:15:07.385925647 +0700
+@@ -1,3 +1,3 @@
+-x: -1.0121289491653442
+-y: -0.9938768148422241
+-yaw: 2.118169005609664
++x: -0.04378236429908073
++y: 0.00290250696318829
++yaw: 0.9070232974695696
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/bsmc_circle.py Paper1-main/src/amr_control/amr_control/bsmc_circle.py
+--- Paper1-cu/src/amr_control/amr_control/bsmc_circle.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/bsmc_circle.py	2026-07-21 19:39:47.624947630 +0700
+@@ -18,6 +18,7 @@
+         self.err_pub = self.create_publisher(Point, '/tracking_error', 10)
+         self.desired_pub = self.create_publisher(Point, '/desired_trajectory', 10)
+         self.desired_mode_pub = self.create_publisher(String, '/desired_trajectory_mode', 10)
++        self.disturbance_pub = self.create_publisher(Bool, '/disturbance_event', 10)
+ 
+         # Controller feedback must be the camera + wheel-odometry EKF output.
+         # /odom_raw is prediction-only and must not be used for camera tests.
+@@ -31,8 +32,8 @@
+         self.declare_parameter('k1', 1.163)
+         self.declare_parameter('k2', 4.499)
+         self.declare_parameter('k3', 3.300)
+-        self.declare_parameter('ks1', 0.0)
+-        self.declare_parameter('ks2', 0.0)
++        self.declare_parameter('ks1', 0.1)
++        self.declare_parameter('ks2', 0.2)
+         self.declare_parameter('phi1', 1.0)
+         self.declare_parameter('phi2', 1.5)
+         self.declare_parameter('max_v', 0.18)
+@@ -162,7 +163,9 @@
+             f"radius_feedback_gain={self.radius_feedback_gain:.2f}, "
+             f"settle_time={self.SETTLE_TIME:.1f}s"
+         )
+-        self.get_logger().info(">>> Nhấn 'p' rồi Enter trên terminal này để TẠM DỪNG / CHẠY TIẾP <<<")
++        self.get_logger().info(
++            ">>> 'p'+Enter: pause/resume; 'd'+Enter: đánh dấu THỜI ĐIỂM THẢ disturbance <<<"
++        )
+ 
+     def pause_cb(self, msg):
+         self.toggle_pause(msg.data)
+@@ -174,6 +177,13 @@
+                 key = sys.stdin.readline().strip().lower()
+                 if key == 'p':
+                     self.toggle_pause(not self.is_paused)
++                elif key == 'd':
++                    event = Bool()
++                    event.data = True
++                    self.disturbance_pub.publish(event)
++                    self.get_logger().warn(
++                        "DISTURBANCE_EVENT published: robot released after displacement"
++                    )
+ 
+     def toggle_pause(self, state):
+         if self.is_paused != state:
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/bsmc_eight.py Paper1-main/src/amr_control/amr_control/bsmc_eight.py
+--- Paper1-cu/src/amr_control/amr_control/bsmc_eight.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/bsmc_eight.py	2026-07-22 18:51:18.857595171 +0700
+@@ -69,18 +69,20 @@
+         self.declare_parameter('initial_align_hold_time', 0.30)
+         self.declare_parameter('initial_align_timeout', 12.0)
+         self.declare_parameter('initial_align_duration_estimate', 8.0)
+-        self.declare_parameter('w_feedforward_scale', 0.80)
+-        self.declare_parameter('w_feedforward_scale_negative', 0.55)
+-        self.declare_parameter('w_feedforward_scale_positive', 0.80)
++        self.declare_parameter('w_feedforward_scale', 1.0)
++        self.declare_parameter('w_feedforward_scale_negative', 1.0)
++        self.declare_parameter('w_feedforward_scale_positive', 1.0)
+         self.declare_parameter('negative_yaw_rate_feedback_gain', 0.50)
+         self.declare_parameter('positive_yaw_rate_feedback_gain', 0.30)
+         self.declare_parameter('feedback_speed_floor', 0.05)
+         self.declare_parameter('center_k1', 1.5)
+         self.declare_parameter('center_k1_radius', 0.50)
+         self.declare_parameter('center_k2', 18.0)
+-        self.declare_parameter('center_k2_radius', 0.65)
+-        self.declare_parameter('center_k3', 1.0)
++        self.declare_parameter('center_k2_radius', 0.80)
++        self.declare_parameter('center_k3', 0.0) # Đưa về 0 để triệt tiêu hoàn toàn sự chống đối của e_theta ở tâm
+         self.declare_parameter('center_k3_radius', 0.65)
++        self.declare_parameter('ki_y', 0.0) # Figure-8 profile disables cross-lobe windup
++        self.declare_parameter('i_y_max', 0.2) # Giới hạn chống wind-up
+         self.declare_parameter('v_cmd_scale', 1.0)
+ 
+         self.odom_topic = self.get_parameter('odom_topic').value
+@@ -239,6 +241,10 @@
+         # Yaw bias estimator: phát hiện robot quay thiếu/quay thừa
+         self.yaw_bias_integral = 0.0
+         self.yaw_feedforward = 0.0
++        
++        self.i_y = 0.0
++        self.KI_Y = float(self.get_parameter('ki_y').value)
++        self.I_Y_MAX = float(self.get_parameter('i_y_max').value)
+ 
+         self.timer = self.create_timer(self.timer_period, self.control_loop)
+ 
+@@ -736,10 +742,7 @@
+ 
+         # === SLIDING SURFACES ===
+         s1 = e_x
+-        s2 = e_theta + self.c * e_y
+-
+         sat_s1 = self.sat(s1 / self.phi1)
+-        sat_s2 = self.sat(s2 / self.phi2)
+ 
+         # Smooth, centre-local gains correct phase and lateral offset on the
+         # zero-curvature crossing without increasing gains on the outer lobes.
+@@ -791,17 +794,52 @@
+         center_k3_q = min(1.0, distance_from_center / self.CENTER_K3_RADIUS)
+         center_k3_weight = 1.0 - center_k3_q * center_k3_q * (3.0 - 2.0 * center_k3_q)
+         k3_control = self.k3 + center_k3_weight * (self.CENTER_K3 - self.k3)
++
++        # The centre-local k3 reduction is intended to stop heading error from
++        # cancelling lateral recovery. Apply the same relative weighting to
++        # e_theta inside the sliding surface; otherwise w_smc keeps the full
++        # opposing heading term after w_eth has already been reduced.
++        if abs(self.k3) > 1e-9:
++            s2_heading_scale = max(0.0, min(1.0, k3_control / self.k3))
++        else:
++            s2_heading_scale = 1.0
++        s2 = s2_heading_scale * e_theta + self.c * e_y
++        sat_s2 = self.sat(s2 / self.phi2)
++
+         v_feedback = max(v_d, self.FEEDBACK_SPEED_FLOOR)
+-        w_cmd = (
+-            entry_scale * w_ff_scale * w_d
+-            + v_feedback * (k2_control * e_y + k3_control * math.sin(e_theta))
+-            + self.Ks2 * sat_s2
++        w_ey = v_feedback * k2_control * e_y
++        w_eth = v_feedback * k3_control * math.sin(e_theta)
++        w_smc = self.Ks2 * sat_s2
++        
++        self.i_y += e_y * self.timer_period
++        self.i_y = max(-self.I_Y_MAX, min(self.I_Y_MAX, self.i_y))
++        w_iy = self.KI_Y * self.i_y
++        
++        w_ff = entry_scale * w_ff_scale * w_d
++        w_cmd_before_yaw_rate = (
++            w_ff
++            + w_ey + w_eth
++            + w_smc
++            + w_iy
+             + self.yaw_feedforward
+         )
++
+         # Yaw-rate tracking feedback — gain now smoothly interpolated
+         # near the centre crossing instead of switching abruptly.
+-        if yaw_rate_gain > 0.0:
+-            w_cmd += yaw_rate_gain * (w_cmd - self.current_w)
++        w_yaw_rate = yaw_rate_gain * (
++            w_cmd_before_yaw_rate - self.current_w
++        )
++        w_cmd = w_cmd_before_yaw_rate + w_yaw_rate
++
++        if distance_from_center < 0.2 and trajectory_t > 5.0:
++            self.get_logger().info(
++                f'[Center] ey={e_y:+.3f} eth={e_theta:+.3f} | '
++                f'w_ff={w_ff:+.3f} w_ey={w_ey:+.3f} '
++                f'w_eth={w_eth:+.3f} w_smc={w_smc:+.3f} '
++                f'w_iy={w_iy:+.3f} w_rate={w_yaw_rate:+.3f} | '
++                f's2_h={s2_heading_scale:.2f} '
++                f'w_pre={w_cmd_before_yaw_rate:+.3f} w={w_cmd:+.3f}'
++            )
+ 
+         # === BOOST VẬN TỐC KHI KHỞI ĐỘNG ===
+         startup_boost = 1.0
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/bsmc_experiment.py Paper1-main/src/amr_control/amr_control/bsmc_experiment.py
+--- Paper1-cu/src/amr_control/amr_control/bsmc_experiment.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/bsmc_experiment.py	2026-07-22 18:11:03.633747509 +0700
+@@ -328,6 +328,8 @@
+             raise SystemExit("--trajectory-ramp-time must be positive")
+         if args.path_rotation_deg is not None and not finite(args.path_rotation_deg):
+             raise SystemExit("--path-rotation-deg must be finite")
++        if not finite(args.start_phase_deg):
++            raise SystemExit("--start-phase-deg must be finite")
+         if not finite(args.entry_heading_blend_time) or args.entry_heading_blend_time < 0.0:
+             raise SystemExit("--entry-heading-blend-time must be finite and >= 0")
+         if args.initial_align_time < 0.0:
+@@ -364,6 +366,10 @@
+             raise SystemExit("--center-k3 must be >= 0 or -1 to inherit --k3")
+         if args.center_k3_radius <= 0.0:
+             raise SystemExit("--center-k3-radius must be > 0")
++        if args.ki_y < 0.0:
++            raise SystemExit("--ki-y must be >= 0")
++        if args.i_y_max <= 0.0:
++            raise SystemExit("--i-y-max must be > 0")
+     elif args.trajectory == "square":
+         if args.side_length <= 0.0:
+             raise SystemExit("--side-length must be positive")
+@@ -549,10 +555,13 @@
+             "-p", f"center_k2_radius:={args.center_k2_radius}",
+             "-p", f"center_k3:={args.center_k3}",
+             "-p", f"center_k3_radius:={args.center_k3_radius}",
++            "-p", f"ki_y:={args.ki_y}",
++            "-p", f"i_y_max:={args.i_y_max}",
+             "-p", f"v_cmd_scale:={args.v_cmd_scale}",
+         ])
+         controller_cmd.extend([
+             "-p", f"path_rotation_deg:={args.path_rotation_deg}",
++            "-p", f"start_phase_deg:={args.start_phase_deg}",
+         ])
+     else:
+         desired_speed = getattr(args, "desired_speed", 0.10)
+@@ -1071,6 +1080,10 @@
+         help="absolute figure-8 long-axis rotation in the odometry world frame",
+     )
+     run.add_argument(
++        "--start-phase-deg", type=float, default=None,
++        help="initial figure-8 phase in degrees",
++    )
++    run.add_argument(
+         "--entry-heading-blend-time", type=float, default=None,
+         help="seconds to ramp heading feedback while moving into the right lobe",
+     )
+@@ -1131,6 +1144,14 @@
+         help="radius in metres over which --center-k3 blends into --k3",
+     )
+     run.add_argument(
++        "--ki-y", type=float, default=None,
++        help="figure-8 lateral integral gain",
++    )
++    run.add_argument(
++        "--i-y-max", type=float, default=None,
++        help="absolute anti-windup limit for the lateral integral state",
++    )
++    run.add_argument(
+         "--v-cmd-scale", type=float, default=None,
+         help="scale factor on v_cmd to compensate hardware velocity gain mismatch",
+     )
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/bsmc_square.py Paper1-main/src/amr_control/amr_control/bsmc_square.py
+--- Paper1-cu/src/amr_control/amr_control/bsmc_square.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/bsmc_square.py	2026-07-20 19:23:26.687255072 +0700
+@@ -66,6 +66,7 @@
+             profile['sharp_corner_blend_full_deg'],
+         )
+         self.declare_parameter('max_progress_rate', 0.30)
++        self.declare_parameter('heading_reference_rate', 0.85)
+         self.declare_parameter(
+             'corner_decel_distance', profile['corner_decel_distance']
+         )
+@@ -113,6 +114,9 @@
+         self.MAX_PROGRESS_RATE = max(
+             self.VD, float(self.get_parameter('max_progress_rate').value)
+         )
++        self.HEADING_REFERENCE_RATE = max(
++            0.01, float(self.get_parameter('heading_reference_rate').value)
++        )
+         self.CORNER_DECEL_DISTANCE = max(
+             0.05, float(self.get_parameter('corner_decel_distance').value)
+         )
+@@ -154,6 +158,8 @@
+         self.tracking_started = False
+         self.path_progress = 0.0
+         self.projection_distance = 0.0
++        self.reference_theta = None
++        self.reference_segment_index = None
+ 
+         # EKF Settling
+         self.settling = False
+@@ -313,13 +319,45 @@
+         ramp = min(1.0, max(0.0, t / 2.5))
+         progress = self._update_path_progress()
+         v_d = self._continuous_path_speed(progress, ramp)
+-        x_local, y_local, theta_local, w_d = self._pose_at_progress(progress)
++        x_local, y_local, theta_local, _ = self._pose_at_progress(progress)
+ 
+         cos0 = math.cos(self.theta0)
+         sin0 = math.sin(self.theta0)
+         x_d = self.x0 + cos0 * x_local - sin0 * y_local
+         y_d = self.y0 + sin0 * x_local + cos0 * y_local
+-        theta_d = self.normalize_angle(self.theta0 + theta_local)
++        target_theta = self.normalize_angle(self.theta0 + theta_local)
++        segment_index, _, _ = self._segment_at_loop_progress(progress)
++
++        if self.reference_theta is None:
++            self.reference_theta = target_theta
++            self.reference_segment_index = segment_index
++
++        if segment_index != self.reference_segment_index:
++            theta_d_old = self.normalize_angle(
++                self.theta0 + self.path_segments[self.reference_segment_index]['heading']
++            )
++            raw_angle_error = target_theta - self.current_theta
++            wrapped_angle_error = self.normalize_angle(raw_angle_error)
++            self.get_logger().info(
++                "WAYPOINT_TRANSITION "
++                f"time={t:.3f}, waypoint_index={segment_index}, "
++                f"theta_d_old={theta_d_old:.6f}, theta_d_new={target_theta:.6f}, "
++                f"theta_est={self.current_theta:.6f}, "
++                f"raw_angle_error={raw_angle_error:.6f}, "
++                f"wrapped_angle_error={wrapped_angle_error:.6f}"
++            )
++            self.reference_segment_index = segment_index
++
++        # A mathematical polyline changes tangent by pi/2 instantaneously.
++        # Rate-limit that target so e_theta measures tracking error instead of
++        # the reference discontinuity.  w_d is the derivative of the filtered
++        # heading and therefore remains consistent with theta_d.
++        remaining = self.normalize_angle(target_theta - self.reference_theta)
++        max_step = self.HEADING_REFERENCE_RATE * self.timer_period
++        theta_step = max(-max_step, min(max_step, remaining))
++        self.reference_theta = self.normalize_angle(self.reference_theta + theta_step)
++        theta_d = self.reference_theta
++        w_d = theta_step / self.timer_period
+         return x_d, y_d, theta_d, v_d, w_d
+ 
+     # ─── Utilities ──────────────────────────────────────────────────
+@@ -417,6 +455,8 @@
+             self.settling = False
+             self.path_progress = 0.0
+             self.projection_distance = 0.0
++            self.reference_theta = self.theta0
++            self.reference_segment_index = 0
+ 
+             n_total = len(self.settle_samples_x)
+             n_good = int(good.sum())
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/camera.py Paper1-main/src/amr_control/amr_control/camera.py
+--- Paper1-cu/src/amr_control/amr_control/camera.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/camera.py	2026-07-21 19:59:47.456513583 +0700
+@@ -1,3 +1,4 @@
++from rclpy.parameter import Parameter
+ #!/usr/bin/env python3
+ import os
+ # Đặt cấu hình FFMPEG TRƯỚC KHI import cv2 để đảm bảo triệt tiêu lag RTSP
+@@ -833,6 +834,18 @@
+                 self.pose['y'] = float(robot_y)
+                 self.pose['yaw'] = float(yaw_deg)
+ 
++            # Bù sai số dịch chuyển tâm quay do AprilTag lệch so với base_link
++            # Lấy offset từ tham số. Mặc định tag nằm lệch 5.57cm về phía trước.
++            tag_offset_x = self.get_parameter_or('tag_offset_x', Parameter('tag_offset_x', Parameter.Type.DOUBLE, 0.0557)).value
++            tag_offset_y = self.get_parameter_or('tag_offset_y', Parameter('tag_offset_y', Parameter.Type.DOUBLE, 0.0)).value
++            
++            yaw_rad = math.radians(self.pose['yaw'])
++            
++            # Tọa độ base_link = Tọa độ tag - vector offset đã quay theo yaw
++            self.pose['x'] -= (math.cos(yaw_rad) * tag_offset_x - math.sin(yaw_rad) * tag_offset_y)
++            self.pose['y'] -= (math.sin(yaw_rad) * tag_offset_x + math.cos(yaw_rad) * tag_offset_y)
++
++
+             self.pose['yaw_unwrapped'] = float(self.raw_yaw_unwrapped)
+             self.latest_tag_depth = float(tvec[2][0])
+             tag_center = np.mean(img_pts, axis=0)
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/eight_profiles.py Paper1-main/src/amr_control/amr_control/eight_profiles.py
+--- Paper1-cu/src/amr_control/amr_control/eight_profiles.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/eight_profiles.py	2026-07-22 18:51:18.729593841 +0700
+@@ -23,19 +23,24 @@
+         "entry_heading_blend_time": 0.0,
+         "initial_align_time": 0.0,
+         "initial_align_timeout": 12.0,
+-        "w_feedforward_scale": 0.80,
+-        # A 0.70 trial reduced heading RMS but doubled negative-lobe lateral
+-        # bias (1.43 -> 2.99 cm) and raised path RMS (1.79 -> 2.44 cm).
+-        # Preserve the position/path-optimal validated value.
+-        "w_feedforward_scale_negative": 0.55,
+-        "w_feedforward_scale_positive": 0.80,
++        # The post-camera-offset r01-r03 repeats showed that scaled-down
++        # curvature feedforward forced non-zero lateral/heading errors to
++        # supply the missing yaw rate.  Encoder yaw rate already followed
++        # both w_cmd and w_d closely, so use the geometric feedforward without
++        # asymmetric attenuation and let feedback correct only disturbances.
++        "w_feedforward_scale": 1.0,
++        "w_feedforward_scale_negative": 1.0,
++        "w_feedforward_scale_positive": 1.0,
+         "negative_yaw_rate_feedback_gain": 0.50,
+         "positive_yaw_rate_feedback_gain": 0.30,
+         "feedback_speed_floor": 0.05,
+         "center_k1": 1.5,
+         "center_k1_radius": 0.50,
+         "center_k2": 18.0,
+-        "center_k2_radius": 0.65,
++        # Begin lateral-priority recovery earlier on the diagonal approach;
++        # r06 left one crossing direction at 1.54 cm RMS while the opposite
++        # direction reached 0.44 cm. The peak centre gain remains unchanged.
++        "center_k2_radius": 0.80,
+         # At the right-to-left crossing, k2*e_y (+0.0315 rad/s) and
+         # k3*sin(e_theta) (-0.0364 rad/s) cancelled. Lower k3 only near the
+         # centre so the robot may steer across the residual parallel offset.
+@@ -46,6 +51,12 @@
+         # near the centre while leaving the outer-lobe k3=7 unchanged.
+         "center_k3": 1.0,
+         "center_k3_radius": 0.65,
++        # Hardware repeats on 2026-07-22 showed the accumulated lateral
++        # integral opposing the centre-local k2 correction at both crossings.
++        # Keep the figure-eight controller memoryless in e_y; the BSMC and
++        # centre-local proportional terms already provide lateral recovery.
++        "ki_y": 0.0,
++        "i_y_max": 0.2,
+         "k1": 0.2205844943,
+         "k2": 6.5,
+         "k3": 7.0,
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/amr_control/embedded_paper_capture.py Paper1-main/src/amr_control/amr_control/embedded_paper_capture.py
+--- Paper1-cu/src/amr_control/amr_control/embedded_paper_capture.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/amr_control/embedded_paper_capture.py	2026-07-22 18:46:47.181097913 +0700
+@@ -17,7 +17,7 @@
+ from geometry_msgs.msg import Point, Twist
+ from nav_msgs.msg import Odometry
+ from rcl_interfaces.msg import ParameterDescriptor
+-from std_msgs.msg import Float32MultiArray
++from std_msgs.msg import Bool, Float32MultiArray
+ 
+ 
+ def _yaw(msg):
+@@ -49,6 +49,7 @@
+         "t", "ros_time", "controller", "trajectory", "run_id",
+         "odom_stamp", "odom_x", "odom_y", "odom_yaw", "odom_v", "odom_w",
+         "camera_stamp", "camera_x", "camera_y", "camera_yaw", "camera_age_s",
++        "disturbance_event",
+         "desired_stamp", "desired_x", "desired_y", "desired_yaw",
+         "error_stamp", "error_ex", "error_ey", "error_etheta",
+         "camera_error_ex", "camera_error_ey", "camera_error_etheta",
+@@ -116,6 +117,8 @@
+         self.stem = stem
+         self.csv_path = output_dir / f"{stem}.csv"
+         self.rows = []
++        self.disturbance_pending = False
++        self.disturbance_count = 0
+         self.latest = {
+             "odom": {}, "camera": {}, "desired": {}, "error": {},
+             "cmd": {}, "link": {},
+@@ -132,6 +135,7 @@
+         node.create_subscription(Point, "/tracking_error", self._error_cb, 20)
+         node.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 20)
+         node.create_subscription(Float32MultiArray, "/espnow_link", self._link_cb, 50)
++        node.create_subscription(Bool, "/disturbance_event", self._disturbance_cb, 10)
+ 
+         rate = max(1.0, float(node.get_parameter("paper_sample_rate").value))
+         self.sample_timer = node.create_timer(1.0 / rate, self._sample)
+@@ -188,6 +192,15 @@
+             "seq": field(2), "interarrival_ms": field(3), "seq_gap": field(4),
+         }
+ 
++    def _disturbance_cb(self, msg):
++        if not bool(msg.data):
++            return
++        self.disturbance_pending = True
++        self.disturbance_count += 1
++        self.node.get_logger().warn(
++            f"Paper capture marked disturbance_event #{self.disturbance_count}"
++        )
++
+     @staticmethod
+     def _get(values, key):
+         return values.get(key, math.nan)
+@@ -204,6 +217,8 @@
+         link = self.latest["link"]
+         camera_stamp = self._get(camera, "stamp")
+         camera_age = now - camera_stamp if _finite(camera_stamp) else math.nan
++        disturbance_event = int(self.disturbance_pending)
++        self.disturbance_pending = False
+ 
+         camera_ex = camera_ey = camera_eth = math.nan
+         required = (
+@@ -231,6 +246,7 @@
+             "camera_stamp": camera_stamp, "camera_x": self._get(camera, "x"),
+             "camera_y": self._get(camera, "y"), "camera_yaw": self._get(camera, "yaw"),
+             "camera_age_s": camera_age,
++            "disturbance_event": disturbance_event,
+             "desired_stamp": self._get(desired, "stamp"),
+             "desired_x": self._get(desired, "x"), "desired_y": self._get(desired, "y"),
+             "desired_yaw": self._get(desired, "yaw"),
+@@ -267,7 +283,22 @@
+                 return
+             completion_text = f"Square path progress reached {completed_laps:.3f} laps"
+         else:
+-            if self._now() - self.start_time < self.duration:
++            duration_start = self.start_time
++            elapsed_paused = 0.0
++            # Circle/eight controllers start their own clock only after the
++            # first odometry message.  Using the capture-construction time can
++            # cut the final path short whenever feedback startup is delayed.
++            if self.trajectory in ("circle", "eight") and hasattr(
++                self.node, "start_time"
++            ):
++                controller_start = getattr(self.node, "start_time", None)
++                if controller_start is None:
++                    return
++                duration_start = float(controller_start)
++                elapsed_paused = float(
++                    getattr(self.node, "total_paused_time", 0.0)
++                )
++            if self._now() - duration_start - elapsed_paused < self.duration:
+                 return
+             completion_text = (
+                 f"Paper duration {self.duration:.1f}s completed "
+@@ -406,6 +437,30 @@
+         outputs += self._save(fig, "commands")
+         plt.close(fig)
+ 
++        disturbance = array("disturbance_event")
++        event_indices = np.flatnonzero(disturbance > 0.5)
++        position_error = np.hypot(
++            array("camera_error_ex"), array("camera_error_ey")
++        )
++        if event_indices.size:
++            event_index = int(event_indices[0])
++            event_t = float(t[event_index])
++            fig, ax = plt.subplots(
++                figsize=(3.5, 2.7), constrained_layout=True
++            )
++            ax.plot(t - event_t, position_error, color="#0072B2", lw=1.0)
++            ax.axvline(0.0, color="#D55E00", ls="--", lw=0.8,
++                       label="release event")
++            ax.axhline(0.03, color="#009E73", ls=":", lw=0.8,
++                       label="3 cm recovery threshold")
++            ax.set_xlim(left=max(float(np.nanmin(t - event_t)), -2.0))
++            ax.set_xlabel("time from disturbance release (s)")
++            ax.set_ylabel(r"$e_p$ (m)")
++            ax.grid(True, alpha=0.3, lw=0.5)
++            ax.legend(loc="best")
++            outputs += self._save(fig, "disturbance_recovery")
++            plt.close(fig)
++
+         moving = np.isfinite(cmd_v) & (np.abs(cmd_v) > 0.005)
+         if moving.any():
+             first_moving_t = t[np.flatnonzero(moving)[0]]
+@@ -437,6 +492,39 @@
+                     ex[metric_mask] ** 2 + ey[metric_mask] ** 2
+                 ))),
+             })
++        if event_indices.size:
++            event_index = int(event_indices[0])
++            event_t = float(t[event_index])
++            post = (
++                (t >= event_t) & np.isfinite(position_error)
++                & np.isfinite(eth)
++            )
++            window10 = post & (t <= event_t + 10.0)
++            summary["disturbance_event_time_s"] = event_t
++            summary["disturbance_peak_position_error_m"] = (
++                float(np.nanmax(position_error[post])) if post.any() else math.nan
++            )
++            summary["disturbance_peak_heading_error_rad"] = (
++                float(np.nanmax(np.abs(eth[post]))) if post.any() else math.nan
++            )
++            if window10.sum() >= 2:
++                summary["disturbance_iae_10_m_s"] = float(np.trapz(
++                    position_error[window10], t[window10]
++                ))
++
++            # Recovered means e_p < 3 cm continuously for at least 2 s.
++            recovery_time = math.nan
++            below_start = None
++            for index in np.flatnonzero(post):
++                if position_error[index] < 0.03:
++                    if below_start is None:
++                        below_start = float(t[index])
++                    if float(t[index]) - below_start >= 2.0:
++                        recovery_time = below_start - event_t
++                        break
++                else:
++                    below_start = None
++            summary["disturbance_recovery_time_s"] = recovery_time
+         if self.trajectory == "eight" and metric_mask.any():
+             desired_yaw = array("desired_yaw")
+             center_x = 0.5 * (np.nanmin(desired_x) + np.nanmax(desired_x))
+@@ -480,6 +568,7 @@
+             "CENTER_K1": "center_k1", "CENTER_K1_RADIUS": "center_k1_radius_m",
+             "CENTER_K2": "center_k2", "CENTER_K2_RADIUS": "center_k2_radius_m",
+             "CENTER_K3": "center_k3", "CENTER_K3_RADIUS": "center_k3_radius_m",
++            "KI_Y": "ki_y", "I_Y_MAX": "i_y_max",
+             "START_PHASE_DEG": "start_phase_deg",
+             "PATH_ROTATION_DEG": "path_rotation_deg",
+         }
+diff -ur '--exclude=build' '--exclude=install' '--exclude=log' '--exclude=__pycache__' '--exclude=.pytest_cache' Paper1-cu/src/amr_control/test/test_eight_profiles.py Paper1-main/src/amr_control/test/test_eight_profiles.py
+--- Paper1-cu/src/amr_control/test/test_eight_profiles.py	2026-07-19 20:17:02.000000000 +0700
++++ Paper1-main/src/amr_control/test/test_eight_profiles.py	2026-07-22 18:51:18.977596418 +0700
+@@ -11,17 +11,20 @@
+     assert profile["k2"] == 6.5
+     assert profile["k3"] == 7.0
+     assert profile["entry_heading_blend_time"] == 0.0
+-    assert profile["w_feedforward_scale_negative"] == 0.55
+-    assert profile["w_feedforward_scale_positive"] == 0.80
++    assert profile["w_feedforward_scale"] == 1.0
++    assert profile["w_feedforward_scale_negative"] == 1.0
++    assert profile["w_feedforward_scale_positive"] == 1.0
+     assert profile["negative_yaw_rate_feedback_gain"] == 0.50
+     assert profile["positive_yaw_rate_feedback_gain"] == 0.30
+     assert profile["feedback_speed_floor"] == 0.05
+     assert profile["center_k1"] == 1.5
+     assert profile["center_k1_radius"] == 0.50
+     assert profile["center_k2"] == 18.0
+-    assert profile["center_k2_radius"] == 0.65
++    assert profile["center_k2_radius"] == 0.80
+     assert profile["center_k3"] == 1.0
+     assert profile["center_k3_radius"] == 0.65
++    assert profile["ki_y"] == 0.0
++    assert profile["i_y_max"] == 0.2
+     assert profile["initial_align_time"] == 0.0
+     assert profile["initial_align_timeout"] >= profile["initial_align_time"]
+ 

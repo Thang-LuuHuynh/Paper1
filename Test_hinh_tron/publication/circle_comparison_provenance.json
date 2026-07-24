@@ -1,0 +1,11 @@
+{
+  "trajectory": "circle",
+  "selection": "latest completed run for each controller",
+  "backstepping_run_id": "test_nhi\u1ec5u_bs",
+  "bsmc_run_id": "test_nhi\u1ec5u_bsmc",
+  "backstepping_csv": "/home/thang/Paper1/Test_hinh_tron/20260721_183839_circle_Backstepping_test_nhi\u1ec5u_bs.csv",
+  "bsmc_csv": "/home/thang/Paper1/Test_hinh_tron/20260721_184335_circle_BSMC_test_nhi\u1ec5u_bsmc.csv",
+  "camera_freshness_limit_s": 0.3,
+  "figure_frame": "trajectory-aligned for figure-eight; local start frame otherwise",
+  "edits": "declared rigid coordinate translation/rotation only; no smoothing"
+}
