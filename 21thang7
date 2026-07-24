@@ -1,0 +1,301 @@
+NGHI VẤN VỀ SAI SỐ KHÔNG HỘI TỤ VỀ 0
+TRÊN HÌNH VUÔNG VÀ HÌNH SỐ 8
+
+1. Mô tả hiện tượng
+
+Khi robot bám quỹ đạo hình vuông, sai số ngang trên các cạnh thẳng thường giảm
+đến một giá trị nhỏ nhưng không hội tụ hoàn toàn về 0. Hiện tượng tương tự xuất
+hiện tại vùng giao nhau theo đường chéo của quỹ đạo hình số 8: robot có thể chạy
+gần song song với đường tham chiếu nhưng vẫn duy trì một độ lệch ngang nhất định.
+
+Không nên kết luận ngay rằng nguyên nhân chỉ nằm ở bộ điều khiển hoặc chỉ nằm ở
+camera. Các dấu hiệu trong code cho thấy đây có thể là tác động tổng hợp của:
+
+- sự triệt tiêu giữa phản hồi sai số ngang và sai số góc;
+- sai lệch hệ tọa độ giữa tâm AprilTag và tâm động học của robot;
+- sai số homography và độ trễ camera;
+- sai lệch phần cứng giữa hai bánh xe;
+- boundary layer của BSMC tương đối lớn;
+- bộ điều khiển chưa có khâu tích phân hoặc cơ chế học steering bias.
+
+
+2. Nghi vấn đối với quỹ đạo hình số 8
+
+2.1. Sự triệt tiêu giữa e_y và e_theta
+
+Trong bsmc_eight.py, lệnh vận tốc góc chứa thành phần:
+
+    v_feedback * (k2_control * e_y
+                  + k3_control * sin(e_theta))
+
+Tại vùng giao nhau của hình số 8, e_y và e_theta có thể ngược dấu. Khi đó,
+k2*e_y sinh lệnh bẻ lái theo một chiều, còn k3*sin(e_theta) sinh lệnh theo chiều
+ngược lại. Hai thành phần có thể gần như triệt tiêu nhau trước khi e_y về 0.
+
+eight_profiles.py đã ghi lại một trường hợp đo thực tế:
+
+    k2*e_y             = +0.0315 rad/s
+    k3*sin(e_theta)    = -0.0364 rad/s
+
+Lệnh bẻ lái ròng vì vậy rất nhỏ. Robot có thể tiếp tục chạy gần song song với
+đường mong muốn mà không đủ khả năng cắt ngang để xóa phần sai số còn lại.
+
+Code hiện tại đã cố khắc phục bằng cách tăng center_k2 lên 18 và giảm center_k3
+xuống 1 trong vùng gần tâm. Tuy nhiên, đây mới là giải pháp tuning theo dữ liệu
+thực nghiệm, chưa loại bỏ hoàn toàn khả năng xuất hiện một điểm cân bằng có
+e_y khác 0.
+
+2.2. Quỹ đạo số 8 chạy theo thời gian
+
+Vị trí mong muốn của hình số 8 được tạo theo pha thời gian. Nếu vận tốc thực tế
+của robot nhỏ hơn vận tốc danh định hoặc phản hồi camera bị trễ, quỹ đạo mong
+muốn vẫn tiếp tục tiến lên. Điều này tạo sai số pha, thường thể hiện dưới dạng
+e_x không bằng 0 ngay cả khi robot đang nằm gần đường hình học mong muốn.
+
+Vùng giao nhau chỉ có độ cong bằng 0 tại một thời điểm. Trước và sau điểm này,
+độ cong đổi dấu nhanh. Vì vậy, đây không phải là một đoạn thẳng có w_d bằng 0
+trong thời gian dài giống cạnh hình vuông.
+
+
+3. Nghi vấn đối với quỹ đạo hình vuông
+
+3.1. Không có khâu triệt steering bias lâu dài
+
+Trên cạnh thẳng, w_d bằng 0 và lệnh góc được tính chủ yếu từ:
+
+    w_cmd = v_d * (k2_straight * e_y
+                   + k3_straight * sin(e_theta))
+            + Ks2 * sat(s2 / phi2)
+
+Nếu hai bánh xe không hoàn toàn cân bằng, robot có thể cần một w_cmd cố định
+khác 0 mới có thể chạy thẳng trong thực tế. Bộ điều khiển hiện tại không có khâu
+tích phân e_y/e_theta và cũng không có biến học steering bias trên cạnh thẳng.
+
+Do đó, controller phải duy trì e_y hoặc e_theta khác 0 để tạo ra lượng w_cmd cần
+thiết nhằm bù sai lệch phần cứng. Đây là một cơ chế có thể tạo steady-state error.
+
+3.2. Boundary layer làm phản hồi sai số nhỏ yếu đi
+
+Code sử dụng:
+
+    s2 = e_theta + c*e_y
+    sat_s2 = sat(s2 / phi2)
+
+với phi2 bằng 1.5. Khi sai số nằm trong boundary layer, sat() trở thành phản hồi
+tuyến tính thay vì chuyển mạch mạnh. Điều này giúp giảm rung và chattering nhưng
+cũng làm tốc độ hiệu chỉnh sai số nhỏ chậm hơn.
+
+Boundary layer không tự nó chứng minh rằng sai số không thể hội tụ về 0 trong mô
+hình lý tưởng. Tuy nhiên, khi tồn tại camera bias, độ trễ hoặc sai lệch hai bánh,
+phản hồi yếu trong boundary layer có thể để lại residual error.
+
+3.3. Damping không phải nghi vấn chính trên cạnh thẳng
+
+Profile hình vuông 1 m có kd_w bằng 0, tức không dùng damping. Profile 2 m có
+kd_w bằng 0.18 nhưng damping chỉ hoạt động khi |current_w| vượt deadband 0.20
+rad/s. Dữ liệu final square cho thấy điều kiện này chỉ xuất hiện ở khoảng 2.1%
+số mẫu được phân loại gần đoạn thẳng.
+
+Vì vậy, damping có thể ảnh hưởng trong quá trình thoát cua nhưng khó có khả năng
+là nguyên nhân chính làm sai số duy trì khác 0 trên toàn bộ cạnh thẳng.
+
+
+4. Nghi vấn đối với camera và hệ tọa độ
+
+4.1. Tâm AprilTag đang được xem như base_link
+
+camera.py tính x, y từ tâm AprilTag rồi publish trực tiếp với child_frame_id là
+base_link. Trong khi đó, bsmc_eight.py đã ghi chú rằng AprilTag lệch tâm quay của
+robot khoảng 5.57 cm.
+
+Khi robot quay hoặc đổi hướng, tâm tag chuyển động quanh tâm động học. Nếu không
+bù offset này, EKF và controller sẽ hiểu chuyển động của tag là chuyển động của
+tâm robot. Sai số quan sát được vì vậy có thể thay đổi theo hướng chuyển động.
+
+Cần đo vector từ tâm trục bánh đến tâm tag trong hệ robot:
+
+    offset_x: khoảng cách theo hướng trước/sau
+    offset_y: khoảng cách theo hướng trái/phải
+
+Sau đó đổi tọa độ tag về tâm robot trước khi publish:
+
+    base_x = tag_x - (cos(yaw)*offset_x - sin(yaw)*offset_y)
+    base_y = tag_y - (sin(yaw)*offset_x + cos(yaw)*offset_y)
+
+Không nên chỉ trừ một hằng số trực tiếp vào x hoặc y của hệ tọa độ toàn cục, vì
+vector offset phải quay theo yaw của robot.
+
+4.2. Square và figure-eight đang dùng hai camera profile khác nhau
+
+Hai executable camera đều dùng chung camera.py nhưng truyền homography khác nhau:
+
+    camera_circle_square -> floor_homography.yaml
+    camera_eight         -> floor_homography_undistorted_candidate.yaml
+
+Figure-eight dùng homography trong miền ảnh undistorted và có khai báo độ phân
+giải 1280x720. Square dùng homography distorted cũ. Vì vậy, sai số phụ thuộc vị
+trí trong ảnh có khả năng ảnh hưởng square nhiều hơn figure-eight.
+
+Phải kiểm tra đúng executable khi chạy:
+
+    ros2 run amr_control camera_circle_square
+    ros2 run amr_control camera_eight
+
+Nếu chạy camera_node mặc định cho figure-eight, node có thể lấy nhầm homography
+cũ tùy đường dẫn và thư mục hiện hành.
+
+4.3. Timestamp camera chưa phản ánh thời điểm chụp ảnh
+
+camera.py gán timestamp sau khi frame đã được đọc qua RTSP, detect AprilTag,
+solvePnP và tính homography. EKF vì thế có thể xem một pose cũ là pose hiện tại.
+
+Ví dụ, tại vận tốc 0.10 m/s, độ trễ thực 100 ms tương ứng với khoảng 1 cm sai số
+dọc. camera_age_s trong logger chủ yếu đo tuổi của message sau khi publish, không
+đo đầy đủ độ trễ nội bộ của camera IP và RTSP.
+
+4.4. Covariance khai báo trong camera.py hiện không phải nguồn tuning chính
+
+custom_ekf.yaml đặt:
+
+    use_camera_msg_covariance: false
+
+Do đó, thay đổi camera_x_variance, camera_y_variance hoặc camera_yaw_variance
+trong camera.py sẽ không trực tiếp thay đổi trọng số camera của EKF. EKF đang sử
+dụng các giá trị camera variance trong custom_ekf.yaml.
+
+
+5. Trình tự kiểm chứng đề xuất
+
+Không nên thay đổi nhiều tham số controller cùng lúc. Nên kiểm chứng theo thứ tự
+sau để tách lỗi cảm biến khỏi lỗi điều khiển.
+
+Bước 1 - Kiểm tra đúng camera profile
+
+- Chạy camera_circle_square khi thử square.
+- Chạy camera_eight khi thử figure-eight.
+- Đọc log khởi động và xác nhận chính xác đường dẫn homography, pixel_domain và
+  image_size được load.
+
+Bước 2 - Kiểm tra offset AprilTag
+
+- Đặt tâm động học robot tại một vị trí cố định.
+- Quay robot chậm tại chỗ qua nhiều góc yaw.
+- Ghi /odom_camera x, y, yaw.
+- Nếu x, y tạo thành một vòng tròn khi quay, bán kính vòng tròn chính là độ lệch
+  tag kết hợp với sai số pose.
+- Đo offset_x, offset_y thực tế và bù về base_link.
+
+Bước 3 - Kiểm tra homography tĩnh trên toàn vùng chạy
+
+- Đặt tag tại nhiều điểm đã biết trên sàn, không chỉ ở tâm ảnh.
+- Thử các yaw 0, 90, 180 và -90 độ tại cùng một điểm.
+- So sánh tọa độ đo với tọa độ thực.
+- Nếu sai số thay đổi theo vị trí ảnh nhưng ít phụ thuộc yaw, nghi homography.
+- Nếu sai số thay đổi rõ theo yaw tại cùng vị trí, nghi offset tag hoặc yaw từ
+  solvePnP.
+
+Bước 4 - Kiểm tra sai lệch hai bánh không dùng camera
+
+- Ra lệnh robot chạy thẳng với cùng vận tốc hai bánh trong khoảng đủ dài.
+- Đo độ lệch hướng bằng camera hoặc mốc ngoài, nhưng không đóng vòng điều khiển.
+- Xác định robot có cần steering bias cố định để chạy thẳng hay không.
+
+Bước 5 - So sánh raw camera và EKF
+
+- Ghi đồng thời /odom_camera, /odometry/filtered, /desired_trajectory,
+  /tracking_error và /cmd_vel.
+- Kiểm tra sai số đã có trong raw camera hay chỉ xuất hiện sau EKF.
+- Nếu camera và EKF cùng có bias, ưu tiên sửa camera/hệ tọa độ.
+- Nếu raw camera hợp lý nhưng EKF chậm hoặc lệch, chỉnh Q/R và xử lý timestamp.
+
+Bước 6 - Phân tích riêng các thành phần w_cmd
+
+Nên log riêng các đại lượng:
+
+    w_ff
+    w_ey = v_feedback*k2_control*e_y
+    w_eth = v_feedback*k3_control*sin(e_theta)
+    w_smc = Ks2*sat(s2/phi2)
+    w_damping
+    w_bias
+    w_cmd_before_limit
+    w_cmd_after_limit
+
+Việc này sẽ xác nhận trực tiếp:
+
+- figure-eight có thật sự bị w_ey và w_eth triệt tiêu hay không;
+- square có bị damping tác động trên cạnh thẳng hay không;
+- w_cmd có chạm giới hạn hay không;
+- residual error có đang được dùng để sinh steering bias hay không.
+
+
+6. Hướng giải quyết đề xuất
+
+Ưu tiên 1 - Sửa hệ tọa độ camera
+
+- Thêm tham số tag_offset_x và tag_offset_y vào camera.py.
+- Chuyển pose tâm tag về pose tâm động học trước khi publish base_link.
+- Dùng một quy ước frame rõ ràng: camera đo tag_link, sau đó biến đổi tag_link
+  sang base_link.
+
+Ưu tiên 2 - Chuẩn hóa homography
+
+- Hiệu chuẩn homography trong miền ảnh undistorted cho toàn bộ quỹ đạo.
+- Lưu pixel_domain, image_width và image_height trong YAML.
+- Truyền đường dẫn tuyệt đối hoặc lấy cố định từ package share.
+- Tránh để kết quả phụ thuộc thư mục hiện hành.
+- Không dùng hai file cùng tên nhưng chứa hai ma trận khác nhau.
+
+Ưu tiên 3 - Xử lý độ trễ camera
+
+- Gắn timestamp càng gần thời điểm nhận frame càng tốt.
+- Đo tổng độ trễ camera IP/RTSP bằng một thử nghiệm độc lập.
+- Nếu chưa hỗ trợ out-of-sequence EKF, có thể dự đoán pose camera tiến tới thời
+  điểm hiện tại bằng v và w, nhưng phải kiểm chứng trước khi dùng trong paper.
+
+Ưu tiên 4 - Bổ sung cơ chế triệt bias cho square
+
+- Sau khi sửa camera, thêm tích phân nhỏ cho e_y hoặc một steering-bias estimator.
+- Dùng anti-windup và chỉ cập nhật trên đoạn thẳng, khi robot đã qua quá trình
+  thoát cua và w_cmd chưa bão hòa.
+- Không nên tăng k2/k3 liên tục để ép residual error, vì có thể làm robot rung và
+  làm xấu quá trình thoát cua.
+
+Một dạng đơn giản:
+
+    i_y += e_y*dt
+    i_y = clamp(i_y, -i_max, i_max)
+    w_cmd += ki_y*i_y
+
+Cần reset hoặc đóng băng i_y gần góc cua.
+
+Ưu tiên 5 - Giải quyết cancellation tại tâm hình số 8
+
+- Log riêng w_ey và w_eth trước khi tiếp tục tuning.
+- Có thể ưu tiên sai số ngang gần tâm bằng center_k2/center_k3 như code hiện tại.
+- Có thể thiết kế mặt trượt với trọng số phụ thuộc độ cong thay vì tuning hai gain
+  riêng rẽ bằng thử-sai.
+- Xem xét dùng tiến độ quỹ đạo theo phép chiếu hình học hoặc phase observer để
+  quỹ đạo mong muốn không chạy trước robot khi có sai số vận tốc.
+
+Ưu tiên 6 - Tinh chỉnh boundary layer sau cùng
+
+- Chỉ giảm phi2 sau khi camera, offset và bias bánh xe đã được xử lý.
+- Giảm phi2 sẽ tăng khả năng sửa sai số nhỏ nhưng cũng tăng rung/chattering.
+- Thử từng mức nhỏ, giữ nguyên các tham số còn lại và so sánh RMS, lateral bias,
+  heading RMS và độ rung của w_cmd.
+
+
+7. Kết luận
+
+Đối với hình số 8, nghi vấn mạnh nhất trong controller là sự triệt tiêu giữa
+k2*e_y và k3*sin(e_theta) tại giao điểm. Đối với hình vuông, damping không phải
+nguyên nhân chính trên cạnh thẳng vì nó hầu như không hoạt động trong vùng này.
+Residual error của square có khả năng đến từ steering bias, camera/homography và
+việc controller chưa có khâu tích phân.
+
+Camera vẫn là một nghi vấn quan trọng cho cả hai quỹ đạo vì tâm AprilTag đang
+được publish như base_link, chưa bù offset khoảng 5.57 cm và timestamp chưa phản
+ánh đầy đủ thời điểm chụp. Vì vậy, nên sửa và kiểm chứng chuỗi đo pose trước khi
+tiếp tục tăng gain controller. Nếu tuning controller khi pose còn bias, gain mới
+có thể chỉ che lỗi cảm biến và không lặp lại ổn định ở vị trí hoặc hướng khác.

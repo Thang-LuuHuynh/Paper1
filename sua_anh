@@ -1,0 +1,220 @@
+STYLE GUIDE — CHUẨN HÓA HÌNH ẢNH KẾT QUẢ THỰC NGHIỆM ĐƯA VÀO PAPER IEEE (BSMC)
+================================================================================
+Phiên bản: đầy đủ, bổ sung thông số cụ thể (màu hex, font, size marker)
+Áp dụng cho: hình quỹ đạo (circle, figure-8), hình sai số ex/ey/eθ, và các hình
+tương tự khác trong paper (so sánh Backstepping vs BSMC...).
+
+--------------------------------------------------------------------------------
+1. MỤC TIÊU CHUNG
+--------------------------------------------------------------------------------
+- Hình phải rõ khi thu nhỏ về kích thước 1 cột (~3.5 in) hoặc 2 cột (~7.16 in)
+  trong template IEEEtran.
+- Không để legend, marker hoặc nhãn trục che dữ liệu.
+- Tất cả hình trong cùng paper phải thống nhất: font, cỡ chữ, độ dày đường,
+  màu sắc, cách đặt tên trục/label.
+- Ưu tiên xuất PDF vector; luôn lưu kèm bản PNG 600 dpi để dự phòng/preview.
+
+--------------------------------------------------------------------------------
+2. FONT & CỠ CHỮ (áp dụng toàn bộ paper)
+--------------------------------------------------------------------------------
+- Font: sử dụng họ serif có hình thức tương thích với phần nội dung của
+  IEEEtran. Có thể dùng Times New Roman, Times hoặc STIX cho hình xuất từ
+  Matplotlib. Lưu ý: IEEEtran dùng kiểu chữ Times-like cho text, nhưng font
+  toán học/công thức trong LaTeX không nhất thiết là Times New Roman đúng
+  nghĩa (thường là Computer Modern hoặc STIX tùy package). Điều quan trọng
+  nhất là TOÀN BỘ figure trong paper dùng nhất quán một hệ font và vẫn đọc
+  rõ khi chèn vào template.
+  + matplotlib config gợi ý:
+      plt.rcParams['font.family'] = 'serif'
+      plt.rcParams['font.serif'] = ['Times New Roman', 'Times', 'DejaVu Serif']
+      plt.rcParams['mathtext.fontset'] = 'stix'   # gần giống Times cho công thức
+- Cỡ chữ:
+  + Tick labels: 8–9 pt
+  + Axis labels: 9–10 pt
+  + Legend: 8–9 pt
+  + (Nếu có) chữ chú thích phụ trong hình: 7–8 pt, hạn chế dùng.
+
+--------------------------------------------------------------------------------
+3. MÀU SẮC CHUẨN (dùng mã hex cố định — áp dụng cho MỌI hình trong paper)
+--------------------------------------------------------------------------------
+- Reference (quỹ đạo tham chiếu): màu đen      #000000   — nét đứt (dashed)
+- EKF / Estimated pose:            màu cam     #E69F00   — nét liền
+- AprilTag measurements:           màu xanh dương #1F77B4 (CHỐT — không dùng
+                                    mã khác cho mọi hình trong paper) — marker
+                                    tròn rời rạc, KHÔNG nối đường. #1F77B4 đậm
+                                    và dễ nhìn hơn #56B4E9 khi thu nhỏ hình.
+- Start marker:                    màu xanh lá #2CA02C   — marker tam giác
+- Đường zero-reference (hình sai số): màu xám  #808080   — nét đứt mảnh
+- Sai số e_x:                      #1F77B4 (xanh dương)
+- Sai số e_y:                      #E69F00 (cam)
+- Sai số e_θ:                      #D55E00 (cam đỏ/đỏ gạch)
+- Grid: màu xám nhạt #CCCCCC, alpha = 0.4–0.5, linewidth = 0.5
+
+Lưu ý: bảng màu trên chọn theo hướng "colorblind-friendly" (Okabe-Ito palette),
+có khả năng phân biệt tốt khi in màu. Tuy nhiên màu tốt KHÔNG tự đảm bảo hình
+rõ khi in đen trắng/grayscale — để chắc chắn đọc được ở chế độ đen trắng, LUÔN
+kết hợp thêm linestyle và marker khác nhau cho mỗi đường (đã quy định ở mục 5),
+không dựa vào riêng màu sắc.
+
+--------------------------------------------------------------------------------
+4. ĐỘ DÀY ĐƯỜNG (LINEWIDTH)
+--------------------------------------------------------------------------------
+- Reference:        1.5–2.0 pt (gợi ý dùng 1.8 pt)
+- EKF:               1.5–2.0 pt (gợi ý dùng 1.6 pt, mảnh hơn Reference một chút
+                     để không "đè" lên đường tham chiếu)
+- Đường sai số (ex, ey, eθ): 1.2–1.5 pt (KHÔNG vượt 1.8 pt, tránh hình bị
+                     "mập" khi thu nhỏ về 1 cột — đây là lỗi đã gặp ở bản trước)
+- Đường zero-reference: 0.8–1.0 pt, nét đứt mảnh
+
+--------------------------------------------------------------------------------
+5. HÌNH QUỸ ĐẠO (circle / figure-8)
+--------------------------------------------------------------------------------
+- Bắt buộc dùng axis('equal') hoặc set_aspect('equal', adjustable='box') để
+  một đơn vị trên trục x có cùng kích thước hiển thị với một đơn vị trên trục
+  y. Việc thiếu thiết lập này có thể làm TOÀN BỘ quỹ đạo bị kéo giãn hoặc nén
+  theo một phương, nhưng KHÔNG phải là nguyên nhân gây bất đối xứng riêng giữa
+  hai thùy của quỹ đạo số 8. Nếu quan sát thấy một thùy lớn/lệch hơn thùy còn
+  lại sau khi đã bật axis equal, nguyên nhân nằm ở dữ liệu (robot bám path
+  kém hơn ở một đoạn cua, offset trong EKF, hoặc bất đối xứng cơ khí của
+  robot) — cần kiểm tra dữ liệu, không phải lỗi trình bày hình.
+- Legend:
+  + Thu nhỏ khoảng 15–25% so với mặc định (fontsize 8–9 pt, markerscale ~0.8).
+  + Đặt ở vị trí KHÔNG che dữ liệu — ưu tiên góc ít giao cắt quỹ đạo, hoặc đặt
+    hẳn ra ngoài trục bằng bbox_to_anchor nếu hình đủ rộng.
+- Nhãn "AprilTag" phải đổi thành "AprilTag measurements" (hoặc "AprilTag-based
+  pose") — không dùng tên viết tắt trơn.
+- AprilTag measurements:
+  + Marker: hình tròn ('o'), màu #1F77B4, KHÔNG nối thành đường liền
+            (linestyle='None').
+  + Kích thước marker: markersize = 4–5 pt (đủ lớn để thấy rõ khi thu nhỏ về
+    1 cột — đây là lỗi đã gặp ở bản trước khi marker quá nhỏ/nhạt).
+  + Chỉ hiển thị một phần mẫu để hình sạch, không rối mắt và không che đường
+    EKF. QUAN TRỌNG: việc giảm mật độ marker CHỈ áp dụng cho visualization;
+    mọi mẫu dữ liệu gốc vẫn phải được giữ nguyên khi tính RMSE, MAE, sai số
+    cực đại và các metric khác. Nên ghi chú trong caption hoặc phần phương
+    pháp rằng marker được subsample khi vẽ để tránh hiểu nhầm là dữ liệu
+    AprilTag thực sự có tần số lấy mẫu thấp.
+  + Không cố định cứng "mỗi 5–10 mẫu" — nên chọn step theo độ dài dữ liệu để
+    số lượng marker hiển thị ổn định (khoảng 100–150 điểm) bất kể run dài hay
+    ngắn:
+        step = max(1, len(tag_x) // 150)
+        ax.plot(tag_x[::step], tag_y[::step], 'o', linestyle='None', ...)
+  + alpha = 0.8–0.9 (đủ đậm, không quá nhạt).
+- Start: marker tam giác ('^'), màu #2CA02C, markersize = 8–10 pt, chỉ 1 điểm
+  duy nhất tại vị trí xuất phát.
+- Thứ tự vẽ (zorder): quy định rõ để đường/marker không bị đè sai lớp, ví dụ:
+        ax.plot(x_ref, y_ref, '--', linewidth=1.8, zorder=1)   # Reference
+        ax.plot(x_ekf, y_ekf, '-',  linewidth=1.6, zorder=2)   # EKF
+        ax.plot(x_tag, y_tag, 'o', linestyle='None', zorder=3) # AprilTag
+        ax.plot(x0, y0, '^', markersize=9, zorder=4)           # Start
+  (Start và AprilTag nằm trên cùng vì là marker rời rạc, cần thấy rõ, không
+  bị 2 đường liền che mất.)
+- Grid: linewidth 0.5, alpha 0.4, màu #CCCCCC — không được đậm hơn đường dữ
+  liệu.
+- Nhãn trục: "x (m)" và "y (m)", cỡ chữ 9–10 pt.
+- KHÔNG đặt title lớn bên trong hình — mọi mô tả để trong caption LaTeX.
+
+--------------------------------------------------------------------------------
+6. HÌNH SAI SỐ e_x, e_y, e_θ
+--------------------------------------------------------------------------------
+- Bố cục: 3 subplot xếp dọc (3 hàng, 1 cột), share trục x (sharex=True).
+- Chỉ đặt nhãn "time (s)" ở subplot cuối cùng (dưới cùng).
+- Ký hiệu trục dùng LaTeX thống nhất: $e_x$ (m), $e_y$ (m), $e_\theta$ (rad).
+- Đường zero-reference: nét đứt mảnh màu #808080, linewidth 0.8–1.0, vẽ ở mọi
+  subplot.
+- Line width dữ liệu: 1.2–1.5 pt (xem mục 4) — GIẢM so với bản gốc nếu hiện
+  đang dùng >1.8 pt, đặc biệt là e_θ.
+- KHÔNG cần legend nếu mỗi subplot chỉ có 1 đường và trục đã có nhãn rõ ràng.
+- Cỡ chữ tick/label đồng nhất giữa 3 subplot (xem mục 2).
+- Có thể giữ dữ liệu thô. Nếu làm mượt (smoothing) để trình bày, PHẢI ghi chú
+  rõ trong caption: "light smoothing applied for visualization only".
+- TUYỆT ĐỐI không chỉnh sửa dữ liệu để giảm peak hoặc che sai số lớn.
+- KHÔNG viết "small error" trong text paper nếu hình vẫn cho thấy peak lớn mà
+  không giải thích nguyên nhân (ví dụ: peak tại góc bẻ lái gấp của figure-8).
+
+--------------------------------------------------------------------------------
+7. XUẤT FILE
+--------------------------------------------------------------------------------
+- Định dạng ưu tiên:
+  + PDF vector (dùng cho LaTeX/Overleaf) — dùng plt.savefig('ten_hinh.pdf').
+  + PNG 600 dpi làm bản dự phòng — plt.savefig('ten_hinh.png', dpi=600).
+- Luôn dùng bbox_inches="tight" khi lưu để cắt viền trắng thừa.
+- KHÔNG chụp màn hình (screenshot) rồi chèn vào paper.
+- Kiểm tra lại hình sau khi chèn vào template ở đúng kích thước thật (1 cột
+  hay 2 cột) trước khi chốt — chữ và marker phải còn đọc được.
+- Nếu dùng 1 cột: đảm bảo chữ/marker vẫn rõ ở bề rộng ~3.5 in.
+- Nếu dùng 2 cột: tránh kéo giãn ngang làm sai tỉ lệ trục.
+
+--------------------------------------------------------------------------------
+8. BỐ CỤC ĐỀ XUẤT TRONG PAPER
+--------------------------------------------------------------------------------
+- ƯU TIÊN tách thành 2 figure riêng nếu paper còn đủ không gian trang:
+  + Figure X: quỹ đạo thực nghiệm (circle/figure-8).
+  + Figure Y: ba sai số tracking e_x, e_y, e_θ theo thời gian.
+  Lý do: hình (b) thực chất chứa 3 subplot xếp dọc, nếu ghép tiếp với hình
+  quỹ đạo thì tổng figure sẽ rất cao và chữ có nguy cơ bị nhỏ khi thu về 1 cột.
+- CHỈ ghép thành 1 figure nhiều phần (a)(b) khi:
+  + Dùng chiều rộng 2 cột (double-column figure), VÀ
+  + Đã kiểm tra chữ/marker vẫn đọc rõ ở đúng kích thước thật sau khi chèn vào
+    template.
+  Khi ghép, dùng plt.subplots với gridspec — KHÔNG ép tỉ lệ chiều cao cố định
+  giữa (a) và (b), vì hình sai số 3 hàng thường cần cao hơn đáng kể so với
+  hình quỹ đạo (dạng vuông/aspect equal). Nên để tỉ lệ theo nội dung thực tế
+  (ví dụ dùng height_ratios tính toán dựa trên số subplot: quỹ đạo ~1 phần,
+  sai số ~2.5–3 phần), cách nhau bằng hspace/wspace vừa đủ (0.3–0.4) để không
+  dính label.
+- KHÔNG ghép quá nhiều subplot vào 1 hình nếu làm chữ bị nhỏ quá mức đọc được.
+
+--------------------------------------------------------------------------------
+9. CAPTION MẪU
+--------------------------------------------------------------------------------
+Fig. X. Experimental lemniscate trajectory tracking results: (a) comparison
+among the reference trajectory, EKF-estimated trajectory, and AprilTag-based
+position measurements; (b) longitudinal, lateral, and heading tracking errors
+over time.
+
+(Điều chỉnh "lemniscate" thành "circular" nếu là quỹ đạo tròn, và cập nhật lại
+mô tả (a)/(b) cho đúng nội dung từng figure cụ thể.)
+
+--------------------------------------------------------------------------------
+10. CÁC LỖI CẦN TRÁNH (checklist lỗi thường gặp)
+--------------------------------------------------------------------------------
+- [ ] Legend che quỹ đạo hoặc dữ liệu.
+- [ ] AprilTag marker quá nhỏ hoặc quá nhạt (markersize < 4, alpha < 0.6).
+- [ ] Grid quá đậm, cạnh tranh với dữ liệu.
+- [ ] Font giữa các hình không đồng nhất (vd hình này Arial, hình kia Times).
+- [ ] Cỡ chữ quá nhỏ khi thu về kích thước thật trong template IEEE.
+- [ ] Dùng title dài/lớn bên trong hình thay vì để trong caption.
+- [ ] Xuất ảnh độ phân giải thấp (<300 dpi cho PNG).
+- [ ] Dùng các màu gần nhau (vd 2 sắc cam khác nhau) mà không có khác biệt
+      thêm về nét/marker để phân biệt khi in đen trắng.
+- [ ] Làm mượt dữ liệu nhưng không ghi chú rõ trong caption.
+- [ ] Ghi "small error" trong text khi hình vẫn có peak lớn mà không giải thích.
+- [ ] Trục x/y của hình quỹ đạo không đồng tỉ lệ (thiếu axis equal) → hình méo.
+- [ ] Line width sai số quá dày (>1.8 pt) khiến hình bị "mập" khi thu nhỏ.
+
+--------------------------------------------------------------------------------
+11. CHECKLIST TRƯỚC KHI CHỐT HÌNH
+--------------------------------------------------------------------------------
+- [ ] Legend không che dữ liệu, đã thu nhỏ 15–25%.
+- [ ] AprilTag marker nhìn rõ ở kích thước 1 cột (markersize 4–5 pt, alpha ≥0.8).
+- [ ] Nhãn "AprilTag measurements" đã cập nhật (không còn "AprilTag" trơn).
+- [ ] Tỉ lệ trục quỹ đạo bằng nhau (axis equal đã áp dụng).
+- [ ] Font serif (Times New Roman/Times/STIX) đồng nhất toàn bộ hình trong paper.
+- [ ] Line width đúng chuẩn: Reference/EKF 1.5–2.0 pt, sai số 1.2–1.5 pt.
+- [ ] Màu sắc đúng mã hex chuẩn ở mục 3, dùng nhất quán cho mọi hình.
+- [ ] Nhãn trục đầy đủ đơn vị: "x (m)", "y (m)", "$e_x$ (m)", "$e_\theta$ (rad)"...
+- [ ] Không có title lớn bên trong hình.
+- [ ] Đã xuất bản PDF vector.
+- [ ] Đã có bản PNG 600 dpi dự phòng.
+- [ ] Đã bbox_inches="tight" khi lưu.
+- [ ] Đã kiểm tra thử hình trong template IEEE ở đúng kích thước thật (1 cột
+      hoặc 2 cột).
+- [ ] Caption mô tả đúng và đầy đủ nội dung đang hiển thị trong hình.
+
+================================================================================
+GHI CHÚ: Style guide này nên dùng làm cấu hình chung (ví dụ 1 file config.py
+hoặc style.mplstyle) áp dụng cho TẤT CẢ các hình trong paper (circle, figure-8,
+so sánh Backstepping vs BSMC, ESP-NOW latency...) để đảm bảo đồng nhất 100%
+giữa các hình, thay vì chỉnh tay từng hình một.
+================================================================================
