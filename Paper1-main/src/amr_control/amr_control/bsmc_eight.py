@@ -50,6 +50,7 @@ class BSMCEight(Node):
         self.declare_parameter('ks2', 0.1159106176)
         self.declare_parameter('phi1', 1.0)
         self.declare_parameter('phi2', 1.5)
+        self.declare_parameter('sliding_c', 1.0)
         self.declare_parameter('max_v', 0.18)
         self.declare_parameter('max_w', 0.85)
         self.declare_parameter('min_v', 0.0)
@@ -258,7 +259,7 @@ class BSMCEight(Node):
         self.kb_thread.start()
 
         # Coupling lateral error to heading sliding surface
-        self.c = 1.0
+        self.c = float(self.get_parameter('sliding_c').value)
 
         # Bảo vệ không cho bánh đảo chiều
         self.L = 0.17          # wheelbase (m)
@@ -332,18 +333,11 @@ class BSMCEight(Node):
 
         now_s = self.get_clock().now().nanoseconds / 1e9
 
-        # Outlier rejection - reject sudden jumps > 1.0m
-        if self.odom_received:
-            dx = new_x - self.current_x
-            dy = new_y - self.current_y
-            dist_jump = math.sqrt(dx*dx + dy*dy)
-
-            if dist_jump > 1.0:
-                self.get_logger().warn(
-                    f"REJECTED outlier: jump={dist_jump:.3f}m "
-                    f"({self.current_x:.3f},{self.current_y:.3f}) -> ({new_x:.3f},{new_y:.3f})"
-                )
-                return
+        # Accept finite EKF relocalization jumps. The EKF has already
+        # validated its absolute camera correction.
+        if not all(math.isfinite(value) for value in (new_x, new_y, new_theta)):
+            self.get_logger().error("REJECTED non-finite filtered odometry")
+            return
 
         self.current_x = new_x
         self.current_y = new_y

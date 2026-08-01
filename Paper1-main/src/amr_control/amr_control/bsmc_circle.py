@@ -24,18 +24,20 @@ class BSMCCircle(Node):
         # /odom_raw is prediction-only and must not be used for camera tests.
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('radius', 1.0)
-        self.declare_parameter('angular_speed', 0.20)
+        self.declare_parameter('angular_speed', 0.108)
         self.declare_parameter('control_frequency', 25.0)
         self.declare_parameter('startup_delay', 1.0)
         self.declare_parameter('settle_time', 2.0)
-        # Optuna TPE best gains (Trial 11, score=0.0477, rmse=3.85cm)
+        # The direct controller defaults to the nominal Backstepping profile.
+        # bsmc_paper_runner injects the validated Circle sliding gains.
         self.declare_parameter('k1', 1.163)
         self.declare_parameter('k2', 4.499)
         self.declare_parameter('k3', 3.300)
-        self.declare_parameter('ks1', 0.1)
-        self.declare_parameter('ks2', 0.2)
+        self.declare_parameter('ks1', 0.0)
+        self.declare_parameter('ks2', 0.0)
         self.declare_parameter('phi1', 1.0)
         self.declare_parameter('phi2', 1.5)
+        self.declare_parameter('sliding_c', 1.0)
         self.declare_parameter('max_v', 0.18)
         self.declare_parameter('max_w', 0.85)
         self.declare_parameter('min_v', 0.0)
@@ -62,8 +64,9 @@ class BSMCCircle(Node):
         self.k3 = float(self.get_parameter('k3').value)
         self.Ks1 = float(self.get_parameter('ks1').value)
         self.Ks2 = float(self.get_parameter('ks2').value)
-        self.phi1 = float(self.get_parameter('phi1').value)
-        self.phi2 = float(self.get_parameter('phi2').value)
+        self.phi1 = max(1e-6, float(self.get_parameter('phi1').value))
+        self.phi2 = max(1e-6, float(self.get_parameter('phi2').value))
+        self.c = max(1e-6, float(self.get_parameter('sliding_c').value))
         self.MAX_V = float(self.get_parameter('max_v').value)
         self.MAX_W = float(self.get_parameter('max_w').value)
         self.MIN_V = float(self.get_parameter('min_v').value)
@@ -140,9 +143,6 @@ class BSMCCircle(Node):
         self.kb_thread = threading.Thread(target=self.keyboard_loop, daemon=True)
         self.kb_thread.start()
 
-        # Coupling lateral error to heading sliding surface
-        self.c = 1.0
-
         # Bảo vệ không cho bánh đảo chiều
         self.L = 0.17          # wheelbase (m)
         self.VL_MIN = 0.0
@@ -159,6 +159,8 @@ class BSMCCircle(Node):
             f"R={self.R:.2f}m, W={self.W:.2f}rad/s, vd={self.VD:.3f}m/s, "
             f"max_v={self.MAX_V:.2f}, max_w={self.MAX_W:.2f}, "
             f"k1={self.k1:.2f}, k2={self.k2:.2f}, k3={self.k3:.2f}, "
+            f"Ks1={self.Ks1:.3f}, Ks2={self.Ks2:.3f}, "
+            f"phi1={self.phi1:.3f}, phi2={self.phi2:.3f}, c={self.c:.3f}, "
             f"radius_position_gain={self.radius_position_gain:.2f}, "
             f"radius_feedback_gain={self.radius_feedback_gain:.2f}, "
             f"settle_time={self.SETTLE_TIME:.1f}s"
@@ -214,18 +216,12 @@ class BSMCCircle(Node):
 
         now_s = self.get_clock().now().nanoseconds / 1e9
 
-        # Outlier rejection - reject sudden jumps > 1.0m (robot không thể di chuyển nhanh thế)
-        if self.odom_received:
-            dx = new_x - self.current_x
-            dy = new_y - self.current_y
-            dist_jump = math.sqrt(dx*dx + dy*dy)
-
-            if dist_jump > 1.0:
-                self.get_logger().warn(
-                    f"REJECTED outlier: jump={dist_jump:.3f}m "
-                    f"({self.current_x:.3f},{self.current_y:.3f}) -> ({new_x:.3f},{new_y:.3f})"
-                )
-                return  # Skip this measurement, keep old value
+        # /odometry/filtered is authoritative and may jump deliberately when
+        # the EKF confirms a camera relocalization. Reject only invalid data;
+        # a second displacement gate here would permanently hide that repair.
+        if not all(math.isfinite(value) for value in (new_x, new_y, new_theta)):
+            self.get_logger().error("REJECTED non-finite filtered odometry")
+            return
 
         self.current_x = new_x
         self.current_y = new_y

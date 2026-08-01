@@ -34,6 +34,7 @@ setup(
             'robot_serial_bridge = amr_control.robot_serial_bridge:main',
             'camera_node = amr_control.camera:main',
             'keyboard_teleop = amr_control.keyboard_teleop:main',
+            'paper_dashboard = amr_control.paper_dashboard:main',
         ],
     },
 )

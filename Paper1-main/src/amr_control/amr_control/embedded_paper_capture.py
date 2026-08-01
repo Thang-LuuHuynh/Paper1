@@ -49,7 +49,7 @@ class EmbeddedPaperCapture:
         "t", "ros_time", "controller", "trajectory", "run_id",
         "odom_stamp", "odom_x", "odom_y", "odom_yaw", "odom_v", "odom_w",
         "camera_stamp", "camera_x", "camera_y", "camera_yaw", "camera_age_s",
-        "disturbance_event",
+        "disturbance_event", "control_paused",
         "desired_stamp", "desired_x", "desired_y", "desired_yaw",
         "error_stamp", "error_ex", "error_ey", "error_etheta",
         "camera_error_ex", "camera_error_ey", "camera_error_etheta",
@@ -247,6 +247,7 @@ class EmbeddedPaperCapture:
             "camera_y": self._get(camera, "y"), "camera_yaw": self._get(camera, "yaw"),
             "camera_age_s": camera_age,
             "disturbance_event": disturbance_event,
+            "control_paused": int(bool(getattr(self.node, "is_paused", False))),
             "desired_stamp": self._get(desired, "stamp"),
             "desired_x": self._get(desired, "x"), "desired_y": self._get(desired, "y"),
             "desired_yaw": self._get(desired, "yaw"),
@@ -323,6 +324,13 @@ class EmbeddedPaperCapture:
             outputs = self._export_assets()
             from amr_control.publication_aggregator import refresh_tracking_assets
             outputs += refresh_tracking_assets(self.output_dir)
+            from amr_control.three_controller_report import (
+                refresh_three_controller_assets,
+            )
+            three_result = refresh_three_controller_assets(
+                self.output_dir, only=self.trajectory
+            )
+            outputs += three_result["generated"]
             self.node.get_logger().info(
                 "Paper run saved: " + ", ".join(str(path) for path in outputs)
             )
@@ -438,6 +446,7 @@ class EmbeddedPaperCapture:
         plt.close(fig)
 
         disturbance = array("disturbance_event")
+        control_paused = array("control_paused")
         event_indices = np.flatnonzero(disturbance > 0.5)
         position_error = np.hypot(
             array("camera_error_ex"), array("camera_error_ey")
@@ -445,14 +454,42 @@ class EmbeddedPaperCapture:
         if event_indices.size:
             event_index = int(event_indices[0])
             event_t = float(t[event_index])
+            pause_before_event = np.flatnonzero(
+                (np.arange(len(t)) < event_index)
+                & np.isfinite(control_paused)
+                & (control_paused > 0.5)
+            )
+            baseline_end_t = event_t
+            if pause_before_event.size:
+                pause_start = int(pause_before_event[-1])
+                while (
+                    pause_start > 0
+                    and np.isfinite(control_paused[pause_start - 1])
+                    and control_paused[pause_start - 1] > 0.5
+                ):
+                    pause_start -= 1
+                baseline_end_t = float(t[pause_start])
+            pre_event = (
+                (t >= baseline_end_t - 3.0) & (t < baseline_end_t)
+                & np.isfinite(position_error)
+            )
+            pre_event_baseline = (
+                float(np.mean(position_error[pre_event]))
+                if pre_event.any() else 0.0
+            )
             fig, ax = plt.subplots(
                 figsize=(3.5, 2.7), constrained_layout=True
             )
             ax.plot(t - event_t, position_error, color="#0072B2", lw=1.0)
             ax.axvline(0.0, color="#D55E00", ls="--", lw=0.8,
                        label="release event")
-            ax.axhline(0.03, color="#009E73", ls=":", lw=0.8,
-                       label="3 cm recovery threshold")
+            ax.axhline(
+                pre_event_baseline + 0.03,
+                color="#009E73",
+                ls=":",
+                lw=0.8,
+                label="pre-event baseline + 3 cm",
+            )
             ax.set_xlim(left=max(float(np.nanmin(t - event_t)), -2.0))
             ax.set_xlabel("time from disturbance release (s)")
             ax.set_ylabel(r"$e_p$ (m)")
@@ -495,36 +532,77 @@ class EmbeddedPaperCapture:
         if event_indices.size:
             event_index = int(event_indices[0])
             event_t = float(t[event_index])
+            pause_before_event = np.flatnonzero(
+                (np.arange(len(t)) < event_index)
+                & np.isfinite(control_paused)
+                & (control_paused > 0.5)
+            )
+            baseline_end_t = event_t
+            disturbance_protocol = "active_or_unclassified"
+            if pause_before_event.size:
+                pause_start = int(pause_before_event[-1])
+                while (
+                    pause_start > 0
+                    and np.isfinite(control_paused[pause_start - 1])
+                    and control_paused[pause_start - 1] > 0.5
+                ):
+                    pause_start -= 1
+                baseline_end_t = float(t[pause_start])
+                disturbance_protocol = "paused_displacement_matched"
+            pre = (
+                (t >= baseline_end_t - 3.0) & (t < baseline_end_t)
+                & np.isfinite(position_error)
+            )
+            pre_baseline = (
+                float(np.mean(position_error[pre])) if pre.any() else 0.0
+            )
             post = (
                 (t >= event_t) & np.isfinite(position_error)
                 & np.isfinite(eth)
             )
             window10 = post & (t <= event_t + 10.0)
             summary["disturbance_event_time_s"] = event_t
+            summary["disturbance_protocol_detected"] = disturbance_protocol
+            summary["disturbance_baseline_end_time_s"] = baseline_end_t
+            summary["disturbance_pre_event_position_error_m"] = pre_baseline
             summary["disturbance_peak_position_error_m"] = (
-                float(np.nanmax(position_error[post])) if post.any() else math.nan
+                float(np.nanmax(position_error[window10]))
+                if window10.any() else math.nan
+            )
+            summary["disturbance_peak_incremental_position_error_m"] = (
+                float(np.nanmax(position_error[window10] - pre_baseline))
+                if window10.any() else math.nan
             )
             summary["disturbance_peak_heading_error_rad"] = (
-                float(np.nanmax(np.abs(eth[post]))) if post.any() else math.nan
+                float(np.nanmax(np.abs(eth[window10])))
+                if window10.any() else math.nan
             )
             if window10.sum() >= 2:
                 summary["disturbance_iae_10_m_s"] = float(np.trapz(
-                    position_error[window10], t[window10]
+                    np.abs(position_error[window10] - pre_baseline),
+                    t[window10],
                 ))
 
-            # Recovered means e_p < 3 cm continuously for at least 2 s.
+            # Predeclared recovery: within 3 cm of the pre-event baseline
+            # continuously for one second, inside the 10-second primary
+            # analysis window.
             recovery_time = math.nan
             below_start = None
-            for index in np.flatnonzero(post):
-                if position_error[index] < 0.03:
+            recovery_threshold = pre_baseline + 0.03
+            for index in np.flatnonzero(window10):
+                if position_error[index] <= recovery_threshold:
                     if below_start is None:
                         below_start = float(t[index])
-                    if float(t[index]) - below_start >= 2.0:
+                    if float(t[index]) - below_start >= 1.0:
                         recovery_time = below_start - event_t
                         break
                 else:
                     below_start = None
             summary["disturbance_recovery_time_s"] = recovery_time
+            summary["disturbance_recovered_within_10_s"] = bool(
+                math.isfinite(recovery_time)
+            )
+            summary["disturbance_recovery_censor_s"] = 10.0
         if self.trajectory == "eight" and metric_mask.any():
             desired_yaw = array("desired_yaw")
             center_x = 0.5 * (np.nanmin(desired_x) + np.nanmax(desired_x))
@@ -566,6 +644,7 @@ class EmbeddedPaperCapture:
             "INTEGRAL_CORNER_DISTANCE": "integral_corner_distance_m",
             "INTEGRAL_HEADING_LIMIT_DEG": "integral_heading_limit_deg",
             "Ks1": "ks1", "Ks2": "ks2", "phi1": "phi1", "phi2": "phi2",
+            "c": "sliding_c",
             "R": "radius_m", "W": "angular_speed_rad_s", "A": "amplitude_m",
             "side_length": "side_length_m", "VD": "desired_speed_m_s",
             "MAX_V": "max_v_m_s", "MAX_W": "max_w_rad_s",

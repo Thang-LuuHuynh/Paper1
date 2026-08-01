@@ -52,6 +52,7 @@ def _local_arrays(rows, figure_rotation_deg=0.0):
         "odom_x", "odom_y", "camera_x", "camera_y", "camera_yaw",
         "camera_stamp", "camera_age_s",
         "camera_error_ex", "camera_error_ey", "camera_error_etheta", "cmd_v",
+        "cmd_w", "disturbance_event", "control_paused",
     )
     values = {key: np.asarray([_float(row, key) for row in rows]) for key in keys}
     if not np.isfinite(values["camera_age_s"]).any():
@@ -101,7 +102,8 @@ def _local_arrays(rows, figure_rotation_deg=0.0):
 
 def _controller_summaries(root):
     summaries = []
-    for path in Path(root).glob("*_summary.json"):
+    root = Path(root)
+    for path in root.glob("*_summary.json"):
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -109,6 +111,13 @@ def _controller_summaries(root):
         if (value.get("controller") in ("BSMC", "Backstepping")
                 and value.get("csv") and value.get("valid", True)
                 and int(value.get("n_metric", 3)) >= 3):
+            csv_path = Path(str(value["csv"])).expanduser()
+            if not csv_path.exists():
+                csv_path = root / csv_path.name
+            if not csv_path.exists():
+                continue
+            value = dict(value)
+            value["csv"] = str(csv_path)
             value["summary_path"] = str(path)
             summaries.append(value)
     return summaries

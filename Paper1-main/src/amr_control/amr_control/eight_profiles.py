@@ -47,9 +47,10 @@ EIGHT_PROFILES = {
         # With k3=3.5 the right-to-left centre terms still cancelled. Reducing
         # it to 2.0 improved that branch, but run 20260719_170630 still showed
         # ey=+0.96 cm against e_theta=-3.51 deg at the crossing, leaving only
-        # about 0.005 rad/s net steering. Use 1.0 to favour lateral recovery
-        # near the centre while leaving the outer-lobe k3=7 unchanged.
-        "center_k3": 1.0,
+        # about 0.005 rad/s net steering. The final three-lap r08 hardware run
+        # used 0.0 and completed all laps without drift; freeze that value so
+        # the profile, executable, summary, and Methods remain consistent.
+        "center_k3": 0.0,
         "center_k3_radius": 0.65,
         # Hardware repeats on 2026-07-22 showed the accumulated lateral
         # integral opposing the centre-local k2 correction at both crossings.

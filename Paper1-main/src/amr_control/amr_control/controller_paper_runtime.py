@@ -89,7 +89,7 @@ def run_controller(node_factory, controller_label, trajectory, configure=None, a
             configure(node)
         node.declare_parameter(
             "paper_laps",
-            1.0,
+            1000.0,
             ParameterDescriptor(dynamic_typing=True),
         )
         laps = max(1.0, float(node.get_parameter("paper_laps").value))

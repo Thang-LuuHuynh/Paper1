@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 import os
 # Đặt cấu hình FFMPEG TRƯỚC KHI import cv2 để đảm bảo triệt tiêu lag RTSP
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+_rtsp_transport = os.getenv("CAMERA_RTSP_TRANSPORT", "tcp").strip().lower()
+if _rtsp_transport not in {"tcp", "udp"}:
+    _rtsp_transport = "tcp"
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    f"rtsp_transport;{_rtsp_transport}|"
+    "fflags;nobuffer|flags;low_delay"
+)
 
 import rclpy
 from rclpy.node import Node
@@ -16,10 +22,12 @@ import os
 import threading
 import queue
 import pupil_apriltags as apriltag
+import requests
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from collections import deque
 from datetime import datetime
+from requests.auth import HTTPDigestAuth
 
 class Kalman1D:
     def __init__(self, Q=1e-2, R=1e-5, P=1.0, x0=0.0):
@@ -203,8 +211,27 @@ class CameraPoseEstimator(Node):
             String, self.trajectory_mode_topic, self.trajectory_mode_callback, 10
         )
 
-        self.ip_url = f"rtsp://{os.getenv('CAMERA_USERNAME', 'admin')}:{os.getenv('CAMERA_PASSWORD', '')}@" \
-                 f"{os.getenv('CAMERA_IP', '192.168.100.56')}:{os.getenv('CAMERA_PORT', '554')}/cam/realmonitor?channel=1&subtype=0"
+        camera_source = os.getenv("CAMERA_SOURCE", "rtsp").strip().lower()
+        if camera_source not in {"rtsp", "http_snapshot"}:
+            camera_source = "rtsp"
+        rtsp_subtype = os.getenv("CAMERA_SUBTYPE", "0").strip()
+        if rtsp_subtype not in {"0", "1", "2"}:
+            rtsp_subtype = "0"
+        self.camera_source = camera_source
+        self.rtsp_subtype = rtsp_subtype
+        self.rtsp_transport = _rtsp_transport
+        self.camera_username = os.getenv("CAMERA_USERNAME", "admin")
+        self.camera_password = os.getenv("CAMERA_PASSWORD", "")
+        self.camera_ip = os.getenv("CAMERA_IP", "192.168.100.56")
+        self.camera_port = os.getenv("CAMERA_PORT", "554")
+        self.ip_url = (
+            f"rtsp://{self.camera_username}:{self.camera_password}@"
+            f"{self.camera_ip}:{self.camera_port}/cam/realmonitor?"
+            f"channel=1&subtype={self.rtsp_subtype}"
+        )
+        self.snapshot_url = (
+            f"http://{self.camera_ip}/cgi-bin/snapshot.cgi?channel=1"
+        )
 
         # Calibration & detector (Đã calibrate ở độ phân giải 1280x720)
         self.base_camera_matrix = np.array([[767.6786, 0., 637.4356],
@@ -260,10 +287,17 @@ class CameraPoseEstimator(Node):
             f"warp_enabled={self.warp_enabled}, "
             f"display_resize={self.display_resize}, "
             f"prefilter_pose={self.prefilter_pose}, "
+            f"camera_source={self.camera_source}, "
+            f"rtsp_transport={self.rtsp_transport}, "
+            f"rtsp_subtype={self.rtsp_subtype}, "
             f"tag_offset=({self.tag_offset_x:+.4f}, {self.tag_offset_y:+.4f})m"
         )
 
     def camera_stream_thread(self):
+        if self.camera_source == "http_snapshot":
+            self.http_snapshot_thread()
+            return
+
         cap = None
         while rclpy.ok():
             if cap is None or not cap.isOpened():
@@ -299,15 +333,42 @@ class CameraPoseEstimator(Node):
                 time.sleep(0.1)
                 continue
 
-            if not self.q.full():
-                self.q.put_nowait(frame)
-            else:
-                try:
-                    self.q.get_nowait()
-                except queue.Empty:
-                    pass
-                self.q.put_nowait(frame)
+            self._queue_latest_frame(frame)
         if cap: cap.release()
+
+    def _queue_latest_frame(self, frame):
+        if not self.q.full():
+            self.q.put_nowait(frame)
+            return
+        try:
+            self.q.get_nowait()
+        except queue.Empty:
+            pass
+        self.q.put_nowait(frame)
+
+    def http_snapshot_thread(self):
+        session = requests.Session()
+        auth = HTTPDigestAuth(self.camera_username, self.camera_password)
+        while rclpy.ok():
+            try:
+                response = session.get(
+                    self.snapshot_url,
+                    auth=auth,
+                    timeout=(self.rtsp_open_timeout_ms / 1000.0,
+                             self.rtsp_read_timeout_ms / 1000.0),
+                )
+                response.raise_for_status()
+                encoded = np.frombuffer(response.content, dtype=np.uint8)
+                frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                if frame is None:
+                    raise ValueError("snapshot response is not a JPEG frame")
+                self._queue_latest_frame(frame)
+            except (requests.RequestException, ValueError) as exc:
+                self.get_logger().warn(
+                    f"HTTP snapshot failed: {exc}",
+                    throttle_duration_sec=2.0,
+                )
+                time.sleep(0.5)
 
     def write_pose_to_yaml(self):
         clean_data = {k: float(v) for k, v in self.pose.items() if k in ['x', 'y', 'yaw']}

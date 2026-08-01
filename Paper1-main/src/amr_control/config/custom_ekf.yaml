@@ -81,3 +81,12 @@ custom_ekf_node:
     # === OUTLIER REJECTION ===
     max_jump_xy: 0.30               # Reject camera flip/jump; không dùng để che frame sai
     max_jump_yaw: 0.70              # ≈40°, đủ cho motion thật nhưng loại yaw flip
+
+    # Giữ gate trên cho tracking bình thường. Chỉ re-init absolute pose khi
+    # camera-EKF mismatch cùng một hướng kéo dài; 40 frame ở 20 Hz ≈ 2 s.
+    camera_relocalization_enabled: true
+    camera_relocalization_min_samples: 40
+    camera_relocalization_min_duration: 1.5
+    camera_relocalization_max_gap: 0.25
+    camera_relocalization_xy_consistency: 0.12  # Offset được phép dao động 12 cm
+    camera_relocalization_yaw_consistency: 0.20 # ≈11.5°

@@ -590,12 +590,12 @@ class BSMCSquare(Node):
         new_theta = self.euler_from_quaternion(msg.pose.pose.orientation)
         now_s = self.get_clock().now().nanoseconds / 1e9
 
-        if self.odom_received:
-            dx = new_x - self.current_x
-            dy = new_y - self.current_y
-            if math.sqrt(dx*dx + dy*dy) > 1.0:
-                self.get_logger().warn(f"REJECTED outlier jump")
-                return
+        # Accept finite EKF relocalization jumps. The EKF owns pose outlier
+        # rejection; duplicating a 1 m gate here can deadlock the controller
+        # forever at its old pose after a valid global correction.
+        if not all(math.isfinite(value) for value in (new_x, new_y, new_theta)):
+            self.get_logger().error("REJECTED non-finite filtered odometry")
+            return
 
         self.current_x = new_x
         self.current_y = new_y

@@ -29,6 +29,88 @@ def covariance_is_valid(covariance, index):
     return 0.0 < covariance[index] < 1e5
 
 
+class PersistentInnovationTracker:
+    """Confirm that rejected camera poses describe one persistent offset.
+
+    A single large innovation is still treated as a camera outlier.  A real
+    displacement, however, produces approximately the same camera-minus-EKF
+    offset over many consecutive frames.  This tracker distinguishes those
+    cases without changing the normal EKF innovation gate.
+    """
+
+    def __init__(
+        self,
+        min_samples,
+        min_duration,
+        max_gap,
+        xy_consistency,
+        yaw_consistency,
+    ):
+        self.min_samples = max(2, int(min_samples))
+        self.min_duration = max(0.0, float(min_duration))
+        self.max_gap = max(0.01, float(max_gap))
+        self.xy_consistency = max(0.001, float(xy_consistency))
+        self.yaw_consistency = max(0.001, float(yaw_consistency))
+        self.reset()
+
+    def reset(self):
+        self.count = 0
+        self.start_time = None
+        self.last_time = None
+        self.mean_dx = 0.0
+        self.mean_dy = 0.0
+        self.mean_dyaw = 0.0
+
+    @property
+    def duration(self):
+        if self.start_time is None or self.last_time is None:
+            return 0.0
+        return max(0.0, self.last_time - self.start_time)
+
+    def observe(self, now_s, dx, dy, dyaw):
+        values = (now_s, dx, dy, dyaw)
+        if not all(math.isfinite(value) for value in values):
+            self.reset()
+            return False
+
+        gap_too_large = (
+            self.last_time is not None
+            and now_s - self.last_time > self.max_gap
+        )
+        offset_changed = (
+            self.count > 0
+            and (
+                math.hypot(dx - self.mean_dx, dy - self.mean_dy)
+                > self.xy_consistency
+                or abs(normalize_angle(dyaw - self.mean_dyaw))
+                > self.yaw_consistency
+            )
+        )
+
+        if self.count == 0 or gap_too_large or offset_changed:
+            self.count = 1
+            self.start_time = now_s
+            self.last_time = now_s
+            self.mean_dx = dx
+            self.mean_dy = dy
+            self.mean_dyaw = dyaw
+            return False
+
+        self.count += 1
+        self.last_time = now_s
+        weight = 1.0 / self.count
+        self.mean_dx += weight * (dx - self.mean_dx)
+        self.mean_dy += weight * (dy - self.mean_dy)
+        self.mean_dyaw = normalize_angle(
+            self.mean_dyaw
+            + weight * normalize_angle(dyaw - self.mean_dyaw)
+        )
+        return (
+            self.count >= self.min_samples
+            and self.duration >= self.min_duration
+        )
+
+
 class CustomEkfNode(Node):
     """
     Lightweight 2D EKF for differential-drive AMR.
@@ -91,6 +173,12 @@ class CustomEkfNode(Node):
         # Outlier rejection thresholds
         self.declare_parameter('max_jump_xy', 0.30)      # m
         self.declare_parameter('max_jump_yaw', 0.52)     # rad ≈ 30 deg
+        self.declare_parameter('camera_relocalization_enabled', True)
+        self.declare_parameter('camera_relocalization_min_samples', 40)
+        self.declare_parameter('camera_relocalization_min_duration', 1.5)
+        self.declare_parameter('camera_relocalization_max_gap', 0.25)
+        self.declare_parameter('camera_relocalization_xy_consistency', 0.12)
+        self.declare_parameter('camera_relocalization_yaw_consistency', 0.20)
 
         self.frequency = float(self.get_parameter('frequency').value)
         self.sensor_timeout = float(self.get_parameter('sensor_timeout').value)
@@ -154,7 +242,18 @@ class CustomEkfNode(Node):
 
         self.max_jump_xy = float(self.get_parameter('max_jump_xy').value)
         self.max_jump_yaw = float(self.get_parameter('max_jump_yaw').value)
+        self.camera_relocalization_enabled = bool(
+            self.get_parameter('camera_relocalization_enabled').value
+        )
+        self.camera_mismatch = PersistentInnovationTracker(
+            self.get_parameter('camera_relocalization_min_samples').value,
+            self.get_parameter('camera_relocalization_min_duration').value,
+            self.get_parameter('camera_relocalization_max_gap').value,
+            self.get_parameter('camera_relocalization_xy_consistency').value,
+            self.get_parameter('camera_relocalization_yaw_consistency').value,
+        )
         self.camera_reject_count = 0
+        self.camera_relocalization_count = 0
 
         self.last_v_state = 0.0
         self.last_w_state = 0.0
@@ -196,7 +295,8 @@ class CustomEkfNode(Node):
             f"publish_tf={self.publish_tf}, "
             f"use_camera_pose={self.use_camera_pose}, use_camera_yaw={self.use_camera_yaw}, "
             f"align_camera_to_odom={self.align_camera_to_odom}, "
-            f"camera_aligned_topic={self.camera_aligned_topic}"
+            f"camera_aligned_topic={self.camera_aligned_topic}, "
+            f"camera_relocalization_enabled={self.camera_relocalization_enabled}"
         )
 
     def now_sec(self):
@@ -217,6 +317,7 @@ class CustomEkfNode(Node):
         self.last_aligned_camera_time = None
         self.last_v_state = 0.0
         self.last_w_state = 0.0
+        self.camera_mismatch.reset()
         if self.align_camera_to_odom:
             self.get_logger().info("Custom EKF reset. Waiting for /odom_raw.")
         else:
@@ -388,14 +489,6 @@ class CustomEkfNode(Node):
         self.predict_to(now_s)
         aligned_msg = self.align_camera_msg(msg)
 
-        if self.aligned_camera_is_outlier(aligned_msg, now_s):
-            self.camera_reject_count += 1
-            self.get_logger().warn(
-                f"Camera aligned jump rejected (#{self.camera_reject_count})",
-                throttle_duration_sec=1.0,
-            )
-            return
-
         z_values = []
         h_rows = []
         r_values = []
@@ -427,38 +520,125 @@ class CustomEkfNode(Node):
             r = np.diag(r_values)
 
             # --- OUTLIER REJECTION ---
-            innovation = z - h @ self.x
-            # Normalize angle innovation for yaw
-            for idx in range(innovation.shape[0]):
-                state_indices = np.flatnonzero(h[idx])
-                if len(state_indices) == 1 and state_indices[0] == 2:
-                    innovation[idx, 0] = normalize_angle(innovation[idx, 0])
+            innovation = self.normalized_innovation(z, h)
 
             # Check jump thresholds
-            reject = False
+            innovation_rejected = False
             for idx in range(innovation.shape[0]):
                 state_indices = np.flatnonzero(h[idx])
                 if len(state_indices) == 1:
                     si = state_indices[0]
                     jump = abs(innovation[idx, 0])
                     if si in (0, 1) and jump > self.max_jump_xy:
-                        reject = True
+                        innovation_rejected = True
                         break
                     if si == 2 and jump > self.max_jump_yaw:
-                        reject = True
+                        innovation_rejected = True
                         break
 
-            if reject:
+            aligned_jump_rejected = self.aligned_camera_is_outlier(
+                aligned_msg, now_s
+            )
+            if innovation_rejected or aligned_jump_rejected:
                 self.camera_reject_count += 1
+                if self.handle_camera_mismatch(aligned_msg, now_s):
+                    return
+                reason = (
+                    "aligned jump and innovation"
+                    if innovation_rejected and aligned_jump_rejected
+                    else "innovation"
+                    if innovation_rejected
+                    else "aligned jump"
+                )
                 self.get_logger().warn(
-                    f"Camera outlier rejected (#{self.camera_reject_count}): "
-                    f"innovation = {innovation.flatten()}",
+                    f"Camera {reason} rejected (total #{self.camera_reject_count}, "
+                    f"persistent {self.camera_mismatch.count}/"
+                    f"{self.camera_mismatch.min_samples}, "
+                    f"{self.camera_mismatch.duration:.2f}s): "
+                    f"innovation={innovation.flatten()}",
                     throttle_duration_sec=1.0,
                 )
                 return
 
             self.ekf_update(z, h, r)
 
+        self.camera_mismatch.reset()
+        self.record_accepted_camera(aligned_msg, now_s)
+
+    def normalized_innovation(self, z, h):
+        innovation = z - h @ self.x
+        for idx in range(innovation.shape[0]):
+            state_indices = np.flatnonzero(h[idx])
+            if len(state_indices) == 1 and state_indices[0] == 2:
+                innovation[idx, 0] = normalize_angle(innovation[idx, 0])
+        return innovation
+
+    def handle_camera_mismatch(self, aligned_msg, now_s):
+        """Relocalize only after a sustained, self-consistent camera offset."""
+        if not self.camera_relocalization_enabled:
+            self.camera_mismatch.reset()
+            return False
+
+        camera_x = float(aligned_msg.pose.pose.position.x)
+        camera_y = float(aligned_msg.pose.pose.position.y)
+        camera_yaw = yaw_from_quaternion(aligned_msg.pose.pose.orientation)
+        dx = camera_x - float(self.x[0, 0]) if self.use_camera_pose else 0.0
+        dy = camera_y - float(self.x[1, 0]) if self.use_camera_pose else 0.0
+        dyaw = (
+            normalize_angle(camera_yaw - float(self.x[2, 0]))
+            if self.use_camera_yaw
+            else 0.0
+        )
+
+        if not self.camera_mismatch.observe(now_s, dx, dy, dyaw):
+            return False
+
+        old_x = float(self.x[0, 0])
+        old_y = float(self.x[1, 0])
+        old_yaw = float(self.x[2, 0])
+        confirmed_samples = self.camera_mismatch.count
+        confirmed_duration = self.camera_mismatch.duration
+
+        # Reinitialize only absolute pose states. Encoder-derived v and w are
+        # preserved so an active robot does not momentarily report zero speed.
+        pose_indices = []
+        if self.use_camera_pose:
+            self.x[0, 0] = camera_x
+            self.x[1, 0] = camera_y
+            pose_indices.extend((0, 1))
+        if self.use_camera_yaw:
+            self.x[2, 0] = camera_yaw
+            pose_indices.append(2)
+
+        pose_variances = {
+            0: self.r_camera_x,
+            1: self.r_camera_y,
+            2: self.r_camera_yaw,
+        }
+        for state_index in pose_indices:
+            self.p[state_index, :] = 0.0
+            self.p[:, state_index] = 0.0
+            self.p[state_index, state_index] = pose_variances[state_index]
+        self.p = 0.5 * (self.p + self.p.T)
+
+        self.last_predict_time = now_s
+        self.last_v_state = float(self.x[3, 0])
+        self.last_w_state = float(self.x[4, 0])
+        self.camera_relocalization_count += 1
+        self.camera_mismatch.reset()
+        self.record_accepted_camera(aligned_msg, now_s)
+        self.get_logger().error(
+            "CAMERA RELOCALIZATION "
+            f"#{self.camera_relocalization_count} after "
+            f"{confirmed_samples} consistent rejected frames/"
+            f"{confirmed_duration:.2f}s: "
+            f"({old_x:.3f}, {old_y:.3f}, {math.degrees(old_yaw):.1f}deg) -> "
+            f"({self.x[0,0]:.3f}, {self.x[1,0]:.3f}, "
+            f"{math.degrees(self.x[2,0]):.1f}deg)."
+        )
+        return True
+
+    def record_accepted_camera(self, aligned_msg, now_s):
         self.last_camera_time = now_s
         self.last_aligned_camera_pose = (
             float(aligned_msg.pose.pose.position.x),

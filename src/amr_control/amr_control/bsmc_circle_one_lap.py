@@ -88,7 +88,7 @@ class BSMCCircleOneLap(Node):
         self.debug_counter = 0
 
         self.get_logger().info(
-            f"BSMC Circle (1 LAP MODE) started. "
+            f"BSMC Circle (MULTI LAP MODE) started. "
             f"R={self.R}, W={self.W}, vd={self.VD:.3f} m/s (~{self.VD/(3.14159*0.063/60.0):.0f} RPM)"
         )
         self.get_logger().info(">>> Nhấn 'p' rồi Enter trên terminal này để TẠM DỪNG / CHẠY TIẾP <<<")
@@ -210,8 +210,8 @@ class BSMCCircleOneLap(Node):
 
         x_d, y_d, theta_d, v_d, w_d, ang = self.generate_desired_trajectory(t_track)
 
-        if ang >= 2 * math.pi:
-            self.get_logger().info("🚀 ĐÃ HOÀN THÀNH 1 VÒNG! Đang tự động dừng robot...")
+        if ang >= 1000 * 2 * math.pi:
+            self.get_logger().info("🚀 ĐÃ HOÀN THÀNH 1000 VÒNG! Đang tự động dừng robot...")
             self.cmd_pub.publish(Twist())
             
             # Publish 0 velocities multiple times to make sure it stops

@@ -21,7 +21,7 @@ def test_one_metre_profile_is_complete():
     assert profile["center_k1_radius"] == 0.50
     assert profile["center_k2"] == 18.0
     assert profile["center_k2_radius"] == 0.80
-    assert profile["center_k3"] == 1.0
+    assert profile["center_k3"] == 0.0
     assert profile["center_k3_radius"] == 0.65
     assert profile["ki_y"] == 0.0
     assert profile["i_y_max"] == 0.2
