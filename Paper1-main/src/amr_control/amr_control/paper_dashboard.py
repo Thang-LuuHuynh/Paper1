@@ -44,6 +44,8 @@ class PaperDashboardNode(Node):
         self.declare_parameter("cmd_topic", "/cmd_vel")
         self.declare_parameter("espnow_link_topic", "/espnow_link")
         self.declare_parameter("camera_topic", "/odom_camera_aligned")
+        # side_length <= 0 means auto-detect from received desired points
+        self.declare_parameter("square_side_length", 0.0)
 
         odom_topic = str(self.get_parameter("odom_topic").value)
         desired_topic = str(self.get_parameter("desired_topic").value)
@@ -51,12 +53,16 @@ class PaperDashboardNode(Node):
         cmd_topic = str(self.get_parameter("cmd_topic").value)
         espnow_topic = str(self.get_parameter("espnow_link_topic").value)
         camera_topic = str(self.get_parameter("camera_topic").value)
+        self._square_side = float(self.get_parameter("square_side_length").value)
 
         # ---- XY history ----
         self.filtered_x = deque(maxlen=self.MAXLEN_XY)
         self.filtered_y = deque(maxlen=self.MAXLEN_XY)
-        self.desired_x = deque(maxlen=self.MAXLEN_XY)
-        self.desired_y = deque(maxlen=self.MAXLEN_XY)
+        # ideal square corners (5 pts to close the polygon), updated live
+        self.desired_x: list = []
+        self.desired_y: list = []
+        self._desired_raw_x = deque(maxlen=self.MAXLEN_XY)  # raw for auto-detect
+        self._desired_raw_y = deque(maxlen=self.MAXLEN_XY)
         self.camera_x = deque(maxlen=self.MAXLEN_XY)
         self.camera_y = deque(maxlen=self.MAXLEN_XY)
 
@@ -115,8 +121,47 @@ class PaperDashboardNode(Node):
         self.camera_y.append(msg.pose.pose.position.y)
 
     def _desired_cb(self, msg):
-        self.desired_x.append(msg.x)
-        self.desired_y.append(msg.y)
+        """Store raw desired points and rebuild the ideal square polygon."""
+        self._desired_raw_x.append(float(msg.x))
+        self._desired_raw_y.append(float(msg.y))
+        self._rebuild_ideal_square()
+
+    def _rebuild_ideal_square(self):
+        """Compute a perfect axis-aligned square from the desired data.
+
+        Strategy:
+          - If square_side_length > 0, use that value directly.
+          - Otherwise auto-detect by taking the range (max-min) of X and Y
+            and using the larger one as the side length.
+          - The square is centered on the centroid of the bounding box of the
+            received desired points.
+        Stores 5 closed polygon points in self.desired_x / self.desired_y.
+        """
+        if len(self._desired_raw_x) < 4:
+            return
+
+        xs = list(self._desired_raw_x)
+        ys = list(self._desired_raw_y)
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+
+        if self._square_side > 0.0:
+            side = self._square_side
+            cx = (x_min + x_max) / 2.0
+            cy = (y_min + y_max) / 2.0
+        else:
+            side = max(x_max - x_min, y_max - y_min)
+            if side < 0.05:          # not enough spread yet
+                return
+            cx = (x_min + x_max) / 2.0
+            cy = (y_min + y_max) / 2.0
+
+        h = side / 2.0
+        # corners: BL → BR → TR → TL → BL (closed)
+        corners_x = [cx - h, cx + h, cx + h, cx - h, cx - h]
+        corners_y = [cy - h, cy - h, cy + h, cy + h, cy - h]
+        self.desired_x = corners_x
+        self.desired_y = corners_y
 
     def _error_cb(self, msg):
         t = self._now()
@@ -247,7 +292,7 @@ def run_dashboard(node: PaperDashboardNode):
 
         # ---- XY trajectory ----
         if len(node.desired_x) > 1 or len(node.filtered_x) > 1:
-            ln_desired.set_data(list(node.desired_x), list(node.desired_y))
+            ln_desired.set_data(node.desired_x, node.desired_y)  # ideal square polygon
             ln_actual.set_data(list(node.filtered_x), list(node.filtered_y))
             ln_camera.set_data(list(node.camera_x), list(node.camera_y))
             ax_xy.relim()
