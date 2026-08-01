@@ -43,7 +43,7 @@ class PaperDashboardNode(Node):
         self.declare_parameter("error_topic", "/tracking_error")
         self.declare_parameter("cmd_topic", "/cmd_vel")
         self.declare_parameter("espnow_link_topic", "/espnow_link")
-        self.declare_parameter("camera_topic", "/odom_camera")
+        self.declare_parameter("camera_topic", "/odom_camera_aligned")
 
         odom_topic = str(self.get_parameter("odom_topic").value)
         desired_topic = str(self.get_parameter("desired_topic").value)

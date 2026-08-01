@@ -1,4 +1,5 @@
 trajectory,controller,n,position_rmse_mean_cm,position_rmse_std_cm,heading_rmse_mean_deg,heading_rmse_std_deg
-eight,BSMC,9,3.60,1.25,5.33,3.49
-square,BSMC,26,5.76,3.11,16.98,8.08
+circle,BSMC,2,5.58,5.52,8.15,10.25
+eight,BSMC,11,3.45,1.16,5.03,3.22
+square,BSMC,28,5.96,3.08,18.17,8.94
 square,Backstepping,3,3.52,1.03,18.91,6.42

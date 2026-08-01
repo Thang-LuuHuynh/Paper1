@@ -1,0 +1,17 @@
+{
+  "Backstepping": {
+    "event_time_s": 88.80379152297974,
+    "pre_event_position_error_m": 0.012377495865161979,
+    "baseline_end_time_s": 23.844632148742676
+  },
+  "BSMC": {
+    "event_time_s": 79.20491194725037,
+    "pre_event_position_error_m": 0.012093192062240823,
+    "baseline_end_time_s": 20.444908142089844
+  },
+  "SMC": {
+    "event_time_s": 87.92753076553345,
+    "pre_event_position_error_m": 0.0948383491163486,
+    "baseline_end_time_s": 26.967538833618164
+  }
+}
