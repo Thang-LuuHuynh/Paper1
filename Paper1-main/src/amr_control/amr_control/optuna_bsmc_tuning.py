@@ -567,7 +567,7 @@ def main(argv=None):
     validate_best(args, study.best_params, output_dir)
 
     # Gợi ý bước tiếp theo
-    print(f"\n  Bước tiếp: chạy validation với best gains:")
+    print("\n  Bước tiếp: chạy validation với best gains:")
     best = study.best_params
     gain_args = " ".join(f"--{k} {v:.4f}" for k, v in best.items())
     print(f"  ros2 run amr_control bsmc_experiment run"

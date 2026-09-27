@@ -212,7 +212,7 @@ class HomographyCalibrator(Node):
         )
 
         try:
-            coords = input(f"Enter real-world (x,y) for this point: ").strip()
+            coords = input("Enter real-world (x,y) for this point: ").strip()
             rx, ry = map(float, coords.split(','))
             self.real_world_points.append([rx, ry])
             self.get_logger().info(f"Added real-world point: ({rx}, {ry})")

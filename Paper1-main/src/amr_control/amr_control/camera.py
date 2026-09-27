@@ -18,7 +18,6 @@ import cv2
 import numpy as np
 import math
 import time
-import os
 import threading
 import queue
 import pupil_apriltags as apriltag
@@ -120,6 +119,9 @@ class CameraPoseEstimator(Node):
         self.declare_parameter('tag_offset_y', 0.0)
         self.declare_parameter('rtsp_open_timeout_ms', 3000)
         self.declare_parameter('rtsp_read_timeout_ms', 5000)
+        self.declare_parameter('display_enabled', bool(os.getenv('DISPLAY')))
+        self.declare_parameter('processing_frequency', 20.0)
+        self.declare_parameter('detector_threads', min(3, os.cpu_count() or 1))
 
         self.yaml_path = self.get_parameter('yaml_path').value
         self.draw_trajectory_enabled = bool(self.get_parameter('draw_trajectory').value)
@@ -174,6 +176,13 @@ class CameraPoseEstimator(Node):
         self.rtsp_read_timeout_ms = max(
             250, int(self.get_parameter('rtsp_read_timeout_ms').value)
         )
+        self.display_enabled = bool(self.get_parameter('display_enabled').value)
+        self.processing_frequency = max(
+            1.0, float(self.get_parameter('processing_frequency').value)
+        )
+        self.detector_threads = max(
+            1, int(self.get_parameter('detector_threads').value)
+        )
 
         self.warp_matrix = None
         self.warp_src_points = None
@@ -221,7 +230,7 @@ class CameraPoseEstimator(Node):
         self.rtsp_subtype = rtsp_subtype
         self.rtsp_transport = _rtsp_transport
         self.camera_username = os.getenv("CAMERA_USERNAME", "admin")
-        self.camera_password = os.getenv("CAMERA_PASSWORD", "lab208b3")
+        self.camera_password = os.getenv("CAMERA_PASSWORD", "")
         self.camera_ip = os.getenv("CAMERA_IP", "192.168.100.56")
         self.camera_port = os.getenv("CAMERA_PORT", "554")
         self.ip_url = (
@@ -239,7 +248,11 @@ class CameraPoseEstimator(Node):
                                   [0., 0., 1.]], dtype=np.float32)
         self.dist_coeffs = np.array([-0.2374, 0.0734, 0.00345, -0.00824, -0.0514], dtype=np.float32)
         self.zero_dist_coeffs = np.zeros_like(self.dist_coeffs)
-        self.detector = apriltag.Detector(families='tag36h11', nthreads=3, refine_edges=1)
+        self.detector = apriltag.Detector(
+            families='tag36h11',
+            nthreads=self.detector_threads,
+            refine_edges=1,
+        )
 
         # Sửa lại kích thước tag cho khớp thực tế (15cm = 0.15m)
         self.marker_size = 0.150
@@ -266,16 +279,21 @@ class CameraPoseEstimator(Node):
         self.window_name = "AprilTag Navigation Monitor"
         self.load_warp_config()
 
-        # Tạo cửa sổ OpenCV cho phép phóng to/thu nhỏ, giữ tỷ lệ ảnh gốc
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-        cv2.setMouseCallback(self.window_name, self.mouse_callback)
+        # IPC thường chạy headless. Chỉ khởi tạo GUI khi có display hoặc
+        # người vận hành bật tường minh qua parameter.
+        if self.display_enabled:
+            cv2.namedWindow(
+                self.window_name,
+                cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO,
+            )
+            cv2.setMouseCallback(self.window_name, self.mouse_callback)
 
         # Bắt đầu luồng đọc camera
         self.camera_thread = threading.Thread(target=self.camera_stream_thread, daemon=True)
         self.camera_thread.start()
 
         # Timer loop (thay thế cho while loop & rate.sleep() của ROS 1)
-        timer_period = 1.0 / 20  # 30 Hz
+        timer_period = 1.0 / self.processing_frequency
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
         self.get_logger().info(
@@ -287,6 +305,9 @@ class CameraPoseEstimator(Node):
             f"warp_enabled={self.warp_enabled}, "
             f"display_resize={self.display_resize}, "
             f"prefilter_pose={self.prefilter_pose}, "
+            f"display_enabled={self.display_enabled}, "
+            f"processing_frequency={self.processing_frequency:.1f}Hz, "
+            f"detector_threads={self.detector_threads}, "
             f"camera_source={self.camera_source}, "
             f"rtsp_transport={self.rtsp_transport}, "
             f"rtsp_subtype={self.rtsp_subtype}, "
@@ -782,7 +803,7 @@ class CameraPoseEstimator(Node):
     def timer_callback(self):
         try:
             # Lấy frame mới nhất, nếu không có thì bỏ qua lượt này
-            frame = self.q.get(timeout=0.05)
+            frame = self.q.get_nowait()
         except queue.Empty:
             return
 
@@ -800,7 +821,6 @@ class CameraPoseEstimator(Node):
         camera_matrix[0, 2] *= scale_x     # cx scale theo chiều ngang
         camera_matrix[1, 2] *= scale_y     # cy scale theo chiều dọc
         
-        scaled_camera_matrix = camera_matrix.copy()
         dist_coeffs = self.dist_coeffs
 
         # ===== DETECT TRÊN ẢNH GỐC (FISHEYE) =====
@@ -1025,18 +1045,41 @@ class CameraPoseEstimator(Node):
 
             self.pose_pub.publish(odom_msg)
 
-            # --- THÊM PHẦN VISUALIZATION ---
-            # 1. Vẽ khung vuông bao quanh AprilTag (màu xanh lá)
-            pts = img_pts.astype(int)
-            for i in range(4):
-                cv2.line(frame, tuple(pts[i]), tuple(pts[(i+1)%4]), (0, 255, 0), 2)
-            
-            cv2.putText(frame, f"AprilTag ID: {det.tag_id}", tuple(pts[3] + [0, 20]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            if self.display_enabled:
+                # Vẽ khung vuông bao quanh AprilTag (màu xanh lá).
+                pts = img_pts.astype(int)
+                for i in range(4):
+                    cv2.line(
+                        frame,
+                        tuple(pts[i]),
+                        tuple(pts[(i + 1) % 4]),
+                        (0, 255, 0),
+                        2,
+                    )
 
-            cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.1, 2)
+                cv2.putText(
+                    frame,
+                    f"AprilTag ID: {det.tag_id}",
+                    tuple(pts[3] + [0, 20]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    1,
+                )
+                cv2.drawFrameAxes(
+                    frame,
+                    camera_matrix,
+                    dist_coeffs,
+                    rvec,
+                    tvec,
+                    0.1,
+                    2,
+                )
 
             break
+
+        if not self.display_enabled:
+            return
 
         self.draw_trajectory_overlay(frame, camera_matrix)
         self.draw_warp_calibration(frame)
@@ -1114,7 +1157,8 @@ def main(args=None, parameter_overrides=None):
     except KeyboardInterrupt:
         pass
     finally:
-        cv2.destroyAllWindows()
+        if node.display_enabled:
+            cv2.destroyAllWindows()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

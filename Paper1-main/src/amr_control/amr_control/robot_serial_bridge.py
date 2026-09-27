@@ -1,20 +1,28 @@
+import os
+import threading
+import time
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from geometry_msgs.msg import Twist
 import serial
-import threading
-import time
+
 
 class RobotSerialBridge(Node):
     def __init__(self):
         super().__init__('robot_serial_bridge')
         self.ser = None
         self.connected = False
+        self._serial_lock = threading.Lock()
+        self._stop_event = threading.Event()
         
         # CẤU HÌNH CỔNG
-        self.declare_parameter('port', '/dev/ttyUSB0')
+        self.declare_parameter(
+            'port', os.getenv('ROBOT_SERIAL_PORT', '/dev/ttyUSB0')
+        )
         self.declare_parameter('baud', 115200)
+        self.declare_parameter('reconnect_interval', 2.0)
         self.declare_parameter('linear_scale', 1.0)
         # STM32 motor command convention is opposite to ROS angular.z.
         # Keep /cmd_vel ROS-standard: positive angular.z means CCW/left.
@@ -26,8 +34,11 @@ class RobotSerialBridge(Node):
         self.declare_parameter('cmd_timeout', 0.25)
         self.declare_parameter('extended_data_order', 'timestamp_seq')
         
-        port = self.get_parameter('port').value
-        baud = self.get_parameter('baud').value
+        self.port = str(self.get_parameter('port').value)
+        self.baud = int(self.get_parameter('baud').value)
+        self.reconnect_interval = max(
+            0.2, float(self.get_parameter('reconnect_interval').value)
+        )
         self.linear_scale = float(self.get_parameter('linear_scale').value)
         self.angular_scale = float(self.get_parameter('angular_scale').value)
         self.max_linear_cmd = float(self.get_parameter('max_linear_cmd').value)
@@ -43,17 +54,6 @@ class RobotSerialBridge(Node):
         self._last_cmd_time = None
         self._watchdog_stopped = True
         
-        try:
-            self.ser = serial.Serial(port, baud, timeout=0.1)
-            self.connected = True
-            self.get_logger().info(
-                f"Đã kết nối dây qua cổng: {port} - Baud: {baud}; "
-                f"linear_scale={self.linear_scale:.2f}, angular_scale={self.angular_scale:.2f}"
-            )
-        except Exception as e:
-            self.get_logger().error(f"Không thể mở cổng Serial: {e}")
-            return
-
         # Pub dữ liệu raw cho state_bridge xử lý
         self.state_pub = self.create_publisher(Float32MultiArray, '/robot_state', 10)
         self.link_pub = self.create_publisher(Float32MultiArray, '/espnow_link', 10)
@@ -63,43 +63,98 @@ class RobotSerialBridge(Node):
         self.cmd_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_callback, 10)
 
         # Thread đọc Serial để không làm treo ROS
+        self._connect_serial()
         self.thread = threading.Thread(target=self.read_serial, daemon=True)
         self.thread.start()
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_callback)
 
-    def read_serial(self):
-        while rclpy.ok():
+    def _connect_serial(self):
+        if self._stop_event.is_set():
+            return False
+        with self._serial_lock:
+            if self.ser is not None and self.ser.is_open:
+                return True
             try:
-                if self.ser is None or not self.ser.is_open:
-                    return
-                if self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    # Legacy: DATA,rpmL*10,rpmR*10,gyro*1000
-                    # Extended: DATA,robot_ms,seq,rpmL*10,rpmR*10,gyro*1000
-                    if line.startswith("DATA,"):
-                        parts = line.split(',')
-                        parsed = self.parse_data_packet(parts)
-                        if parsed is not None:
-                            msg = Float32MultiArray()
-                            # Đẩy nguyên cục dữ liệu lên, state_bridge sẽ tự chia 10 và 1000
-                            msg.data = [
-                                parsed['rpm_l_x10'],
-                                parsed['rpm_r_x10'],
-                                parsed['gyro_z_x1000'],
-                            ]
-                            self.state_pub.publish(msg)
+                new_serial = serial.Serial(self.port, self.baud, timeout=0.1)
+                # A reconnect must never replay an old motion command.
+                new_serial.write(b"CMD,0.0000,0.0000\r\n")
+                self.ser = new_serial
+                self.connected = True
+                self._last_cmd_time = None
+                self._watchdog_stopped = True
+            except (OSError, serial.SerialException) as exc:
+                self.ser = None
+                self.connected = False
+                self.get_logger().error(
+                    f"Không thể mở cổng Serial {self.port}: {exc}",
+                    throttle_duration_sec=5.0,
+                )
+                return False
 
-                            link_msg = Float32MultiArray()
-                            link_msg.data = [
-                                parsed['rx_time'],
-                                parsed['robot_time_ms'],
-                                parsed['seq'],
-                                parsed['interarrival_ms'],
-                                parsed['seq_gap'],
-                            ]
-                            self.link_pub.publish(link_msg)
-            except Exception as e:
-                self.get_logger().error(f"Lỗi đọc Serial: {e}")
+        self.get_logger().info(
+            f"Đã kết nối dây qua cổng: {self.port} - Baud: {self.baud}; "
+            f"linear_scale={self.linear_scale:.2f}, "
+            f"angular_scale={self.angular_scale:.2f}"
+        )
+        return True
+
+    def _disconnect_serial(self, reason=None):
+        with self._serial_lock:
+            serial_port = self.ser
+            self.ser = None
+            self.connected = False
+            if serial_port is not None:
+                try:
+                    serial_port.close()
+                except (OSError, serial.SerialException):
+                    pass
+        if reason is not None:
+            self.get_logger().error(
+                f"Mất kết nối Serial: {reason}; sẽ thử kết nối lại.",
+                throttle_duration_sec=5.0,
+            )
+
+    def read_serial(self):
+        while rclpy.ok() and not self._stop_event.is_set():
+            if not self._connect_serial():
+                self._stop_event.wait(self.reconnect_interval)
+                continue
+            try:
+                serial_port = self.ser
+                if serial_port is None:
+                    continue
+                # readline() sleeps up to the configured timeout. The old
+                # in_waiting loop polled continuously and consumed a CPU core
+                # whenever the controller was idle.
+                line = serial_port.readline().decode(
+                    'utf-8', errors='ignore'
+                ).strip()
+                if not line.startswith("DATA,"):
+                    continue
+                parts = line.split(',')
+                parsed = self.parse_data_packet(parts)
+                if parsed is None:
+                    continue
+
+                msg = Float32MultiArray()
+                msg.data = [
+                    parsed['rpm_l_x10'],
+                    parsed['rpm_r_x10'],
+                    parsed['gyro_z_x1000'],
+                ]
+                self.state_pub.publish(msg)
+
+                link_msg = Float32MultiArray()
+                link_msg.data = [
+                    parsed['rx_time'],
+                    parsed['robot_time_ms'],
+                    parsed['seq'],
+                    parsed['interarrival_ms'],
+                    parsed['seq_gap'],
+                ]
+                self.link_pub.publish(link_msg)
+            except (OSError, serial.SerialException) as exc:
+                self._disconnect_serial(exc)
 
     def parse_data_packet(self, parts):
         rx_time = time.monotonic()
@@ -149,7 +204,10 @@ class RobotSerialBridge(Node):
 
     def cmd_callback(self, msg):
         if self.ser is None or not self.ser.is_open:
-            self.get_logger().warn("Serial chưa sẵn sàng, bỏ qua lệnh /cmd_vel.")
+            self.get_logger().warn(
+                "Serial chưa sẵn sàng, bỏ qua lệnh /cmd_vel.",
+                throttle_duration_sec=2.0,
+            )
             return
 
         v_cmd = max(
@@ -160,55 +218,63 @@ class RobotSerialBridge(Node):
             -self.max_angular_cmd,
             min(self.max_angular_cmd, msg.angular.z * self.angular_scale),
         )
-        self._last_cmd_time = time.monotonic()
-        self._watchdog_stopped = False
-        self.write_command(v_cmd, w_cmd)
+        if self.write_command(v_cmd, w_cmd):
+            self._last_cmd_time = time.monotonic()
+            self._watchdog_stopped = False
 
     def write_command(self, v_cmd, w_cmd):
         """Send and publish the command after bridge scaling/clamping."""
         if self.ser is None or not self.ser.is_open:
-            return
+            return False
 
         # /cmd_vel stays ROS-standard; angular_scale maps it to STM32 convention.
         cmd_str = f"CMD,{v_cmd:.4f},{w_cmd:.4f}\r\n"
         try:
-            self.ser.write(cmd_str.encode())
+            with self._serial_lock:
+                if self.ser is None or not self.ser.is_open:
+                    return False
+                self.ser.write(cmd_str.encode())
             sent = Twist()
             sent.linear.x = float(v_cmd)
             sent.angular.z = float(w_cmd)
             self.robot_cmd_pub.publish(sent)
-        except Exception as e:
-            self.get_logger().error(f"Lỗi gửi Serial: {e}")
+            return True
+        except (OSError, serial.SerialException) as exc:
+            self._disconnect_serial(exc)
+            return False
 
     def watchdog_callback(self):
         if self._watchdog_stopped or self._last_cmd_time is None:
             return
         if time.monotonic() - self._last_cmd_time <= self.cmd_timeout:
             return
+        if self.write_command(0.0, 0.0):
+            self._watchdog_stopped = True
+            self.get_logger().warn(
+                f"/cmd_vel timeout > {self.cmd_timeout:.2f}s; sent stop command."
+            )
+
+    def destroy_node(self):
+        self._stop_event.set()
         self.write_command(0.0, 0.0)
-        self._watchdog_stopped = True
-        self.get_logger().warn(
-            f"/cmd_vel timeout > {self.cmd_timeout:.2f}s; sent stop command."
-        )
+        self._disconnect_serial()
+        if self.thread.is_alive() and threading.current_thread() is not self.thread:
+            self.thread.join(timeout=0.5)
+        return super().destroy_node()
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = RobotSerialBridge()
-    if not node.connected:
-        node.destroy_node()
-        rclpy.shutdown()
-        return
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        if node.ser is not None and node.ser.is_open:
-            node.write_command(0.0, 0.0)
-            node.ser.close()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

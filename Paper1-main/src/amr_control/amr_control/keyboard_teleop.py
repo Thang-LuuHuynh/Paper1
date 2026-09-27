@@ -126,7 +126,7 @@ def main(args=None):
                 # Timeout → không có phím → dừng robot
                 if was_moving:
                     send(0.0, 0.0)
-                    print(f"\r  [DỪNG]                                          ",
+                    print("\r  [DỪNG]                                          ",
                           end='', flush=True)
                     was_moving = False
                 last_key = ''
