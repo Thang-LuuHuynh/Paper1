@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from amr_control.square_profiles import (
@@ -5,9 +7,28 @@ from amr_control.square_profiles import (
     get_square_profile,
     profile_name_for_side,
     scheduled_lateral_gain,
+    snap_cardinal_heading,
     straight_integral_gate,
     straight_integral_output_gate,
 )
+
+
+@pytest.mark.parametrize(
+    ("heading_deg", "expected_deg"),
+    ((1.5, 0.0), (-7.0, 0.0), (88.0, 90.0), (-92.0, -90.0), (178.0, 180.0)),
+)
+def test_near_cardinal_start_heading_is_snapped(heading_deg, expected_deg):
+    snapped = snap_cardinal_heading(math.radians(heading_deg), 10.0)
+    error = math.atan2(
+        math.sin(snapped - math.radians(expected_deg)),
+        math.cos(snapped - math.radians(expected_deg)),
+    )
+    assert error == pytest.approx(0.0)
+
+
+def test_intentionally_diagonal_start_heading_is_preserved():
+    heading = math.radians(20.0)
+    assert snap_cardinal_heading(heading, 10.0) == pytest.approx(heading)
 
 
 @pytest.mark.parametrize(

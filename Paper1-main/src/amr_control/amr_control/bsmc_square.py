@@ -14,6 +14,7 @@ from amr_control.square_profiles import (
     corner_forward_speed,
     get_square_profile,
     scheduled_lateral_gain,
+    snap_cardinal_heading,
     straight_integral_gate,
     straight_integral_output_gate,
 )
@@ -58,6 +59,8 @@ class BSMCSquare(Node):
         self.declare_parameter('control_frequency', 25.0)
         self.declare_parameter('startup_delay', 1.0)
         self.declare_parameter('settle_time', 2.0)
+        self.declare_parameter('snap_start_yaw', True)
+        self.declare_parameter('snap_start_yaw_tolerance_deg', 10.0)
         self.declare_parameter('k1', 0.80)
         self.declare_parameter('k2_straight', profile['k2'])
         self.declare_parameter('large_error_k2', profile['large_error_k2'])
@@ -152,6 +155,13 @@ class BSMCSquare(Node):
         self.timer_period = 1.0 / control_frequency
         self.STARTUP_DELAY = float(self.get_parameter('startup_delay').value)
         self.SETTLE_TIME = float(self.get_parameter('settle_time').value)
+        self.SNAP_START_YAW = bool(
+            self.get_parameter('snap_start_yaw').value
+        )
+        self.SNAP_START_YAW_TOLERANCE_DEG = max(
+            0.0,
+            float(self.get_parameter('snap_start_yaw_tolerance_deg').value),
+        )
 
         self.k1 = float(self.get_parameter('k1').value)
         self.k2_straight = float(self.get_parameter('k2_straight').value)
@@ -364,7 +374,10 @@ class BSMCSquare(Node):
             f"lap_time={self.loop_length / self.VD:.1f}s, "
             f"max_v={self.MAX_V:.2f}, max_w={self.MAX_W:.2f}, "
             f"ki_y={self.KI_Y_STRAIGHT:.3f}, "
+            f"i_y_seed={self.INITIAL_EY_INTEGRAL:+.2f}, "
             f"i_y_max={self.EY_INTEGRAL_LIMIT:.2f}, "
+            f"k2={self.k2_straight:.1f}->{self.LARGE_ERROR_K2:.1f}, "
+            f"large_error_ey={self.LARGE_ERROR_EY:.3f}m, "
             f"camera_timeout={self.CAMERA_TIMEOUT:.2f}s, "
             f"robot_state_timeout={self.ROBOT_STATE_TIMEOUT:.2f}s, "
             "mode=continuous-path-following"
@@ -680,7 +693,15 @@ class BSMCSquare(Node):
             self.y0 = float(np.mean(y_arr[good]))
             sin_sum = np.sum(np.sin(theta_arr[good]))
             cos_sum = np.sum(np.cos(theta_arr[good]))
-            self.theta0 = math.atan2(sin_sum, cos_sum)
+            raw_theta0 = math.atan2(sin_sum, cos_sum)
+            self.theta0 = (
+                snap_cardinal_heading(
+                    raw_theta0,
+                    self.SNAP_START_YAW_TOLERANCE_DEG,
+                )
+                if self.SNAP_START_YAW
+                else raw_theta0
+            )
 
             self.tracking_started = True
             self.settling = False
@@ -694,7 +715,9 @@ class BSMCSquare(Node):
             self.get_logger().info(
                 f"=== TRACKING START! ({n_good}/{n_total} samples) ==="
                 f" x0={self.x0:.4f}, y0={self.y0:.4f}, "
-                f"theta0={math.degrees(self.theta0):.1f}deg"
+                f"theta0_raw={math.degrees(raw_theta0):.1f}deg, "
+                f"theta0={math.degrees(self.theta0):.1f}deg, "
+                f"snap={'on' if self.SNAP_START_YAW else 'off'}"
             )
             self.settle_samples_x = []
             self.settle_samples_y = []

@@ -1,11 +1,29 @@
 """Hardware profiles for continuous sharp-corner squares."""
 
+import math
 from copy import deepcopy
 
 
 def _smoothstep01(value):
     value = max(0.0, min(1.0, float(value)))
     return value * value * (3.0 - 2.0 * value)
+
+
+def snap_cardinal_heading(angle, tolerance_deg=10.0):
+    """Snap a near-cardinal heading to the exact closest 90-degree axis.
+
+    Headings outside the tolerance are preserved, allowing an intentionally
+    diagonal square while removing small camera-yaw setup errors near
+    0/90/180/-90 degrees.
+    """
+    angle = math.atan2(math.sin(float(angle)), math.cos(float(angle)))
+    quarter_turn = 0.5 * math.pi
+    nearest = round(angle / quarter_turn) * quarter_turn
+    error = math.atan2(math.sin(angle - nearest), math.cos(angle - nearest))
+    tolerance = math.radians(max(0.0, float(tolerance_deg)))
+    if abs(error) <= tolerance:
+        return math.atan2(math.sin(nearest), math.cos(nearest))
+    return angle
 
 
 def straight_integral_gate(

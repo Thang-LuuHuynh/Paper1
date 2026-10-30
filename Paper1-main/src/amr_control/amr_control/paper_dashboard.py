@@ -2,7 +2,7 @@
 """Real-time dashboard for BSMC paper experiments.
 
 Panels:
-  1. XY trajectory  — actual (EKF filtered) vs desired
+  1. XY trajectory  — actual camera path vs desired, with EKF for comparison
   2. v_cmd & w_cmd  — command velocities over time
   3. Tracking errors — e_x, e_y, e_theta over time
   4. ESP-NOW link    — inter-arrival jitter & packet loss indicator
@@ -44,8 +44,9 @@ class PaperDashboardNode(Node):
         self.declare_parameter("cmd_topic", "/cmd_vel")
         self.declare_parameter("espnow_link_topic", "/espnow_link")
         self.declare_parameter("camera_topic", "/odom_camera_aligned")
-        # side_length <= 0 means auto-detect from received desired points
-        self.declare_parameter("square_side_length", 0.0)
+        self.declare_parameter("camera_path_point", "tag")
+        self.declare_parameter("camera_tag_offset_x", 0.0557)
+        self.declare_parameter("camera_tag_offset_y", 0.0)
 
         odom_topic = str(self.get_parameter("odom_topic").value)
         desired_topic = str(self.get_parameter("desired_topic").value)
@@ -53,16 +54,27 @@ class PaperDashboardNode(Node):
         cmd_topic = str(self.get_parameter("cmd_topic").value)
         espnow_topic = str(self.get_parameter("espnow_link_topic").value)
         camera_topic = str(self.get_parameter("camera_topic").value)
-        self._square_side = float(self.get_parameter("square_side_length").value)
+        self.camera_path_point = str(
+            self.get_parameter("camera_path_point").value
+        ).strip().lower()
+        if self.camera_path_point not in {"tag", "base_link"}:
+            self.get_logger().warn(
+                f"Unknown camera_path_point={self.camera_path_point!r}; using 'tag'."
+            )
+            self.camera_path_point = "tag"
+        self.camera_tag_offset_x = float(
+            self.get_parameter("camera_tag_offset_x").value
+        )
+        self.camera_tag_offset_y = float(
+            self.get_parameter("camera_tag_offset_y").value
+        )
 
         # ---- XY history ----
         self.filtered_x = deque(maxlen=self.MAXLEN_XY)
         self.filtered_y = deque(maxlen=self.MAXLEN_XY)
-        # ideal square corners (5 pts to close the polygon), updated live
-        self.desired_x: list = []
-        self.desired_y: list = []
-        self._desired_raw_x = deque(maxlen=self.MAXLEN_XY)  # raw for auto-detect
-        self._desired_raw_y = deque(maxlen=self.MAXLEN_XY)
+        # XY history
+        self.desired_x = deque(maxlen=self.MAXLEN_XY)
+        self.desired_y = deque(maxlen=self.MAXLEN_XY)
         self.camera_x = deque(maxlen=self.MAXLEN_XY)
         self.camera_y = deque(maxlen=self.MAXLEN_XY)
 
@@ -93,7 +105,8 @@ class PaperDashboardNode(Node):
         self.get_logger().info(
             f"Paper dashboard started — odom={odom_topic}, "
             f"desired={desired_topic}, error={error_topic}, "
-            f"cmd={cmd_topic}, link={espnow_topic}, camera={camera_topic}"
+            f"cmd={cmd_topic}, link={espnow_topic}, camera={camera_topic}, "
+            f"camera_path_point={self.camera_path_point}"
         )
 
     # ---- helpers ----
@@ -117,51 +130,30 @@ class PaperDashboardNode(Node):
         self.filtered_y.append(msg.pose.pose.position.y)
 
     def _camera_cb(self, msg):
-        self.camera_x.append(msg.pose.pose.position.x)
-        self.camera_y.append(msg.pose.pose.position.y)
+        x = float(msg.pose.pose.position.x)
+        y = float(msg.pose.pose.position.y)
+
+        if self.camera_path_point == "tag":
+            # /odom_camera(_aligned) reports base_link after camera.py removes
+            # the measured tag-to-base offset.  Add that rotated offset back
+            # so the dashboard traces the same AprilTag center as the red
+            # pixel history drawn in the live camera window.
+            yaw = self._yaw(msg)
+            x += (
+                math.cos(yaw) * self.camera_tag_offset_x
+                - math.sin(yaw) * self.camera_tag_offset_y
+            )
+            y += (
+                math.sin(yaw) * self.camera_tag_offset_x
+                + math.cos(yaw) * self.camera_tag_offset_y
+            )
+
+        self.camera_x.append(x)
+        self.camera_y.append(y)
 
     def _desired_cb(self, msg):
-        """Store raw desired points and rebuild the ideal square polygon."""
-        self._desired_raw_x.append(float(msg.x))
-        self._desired_raw_y.append(float(msg.y))
-        self._rebuild_ideal_square()
-
-    def _rebuild_ideal_square(self):
-        """Compute a perfect axis-aligned square from the desired data.
-
-        Strategy:
-          - If square_side_length > 0, use that value directly.
-          - Otherwise auto-detect by taking the range (max-min) of X and Y
-            and using the larger one as the side length.
-          - The square is centered on the centroid of the bounding box of the
-            received desired points.
-        Stores 5 closed polygon points in self.desired_x / self.desired_y.
-        """
-        if len(self._desired_raw_x) < 4:
-            return
-
-        xs = list(self._desired_raw_x)
-        ys = list(self._desired_raw_y)
-        x_min, x_max = min(xs), max(xs)
-        y_min, y_max = min(ys), max(ys)
-
-        if self._square_side > 0.0:
-            side = self._square_side
-            cx = (x_min + x_max) / 2.0
-            cy = (y_min + y_max) / 2.0
-        else:
-            side = max(x_max - x_min, y_max - y_min)
-            if side < 0.05:          # not enough spread yet
-                return
-            cx = (x_min + x_max) / 2.0
-            cy = (y_min + y_max) / 2.0
-
-        h = side / 2.0
-        # corners: BL → BR → TR → TL → BL (closed)
-        corners_x = [cx - h, cx + h, cx + h, cx - h, cx - h]
-        corners_y = [cy - h, cy - h, cy + h, cy + h, cy - h]
-        self.desired_x = corners_x
-        self.desired_y = corners_y
+        self.desired_x.append(float(msg.x))
+        self.desired_y.append(float(msg.y))
 
     def _error_cb(self, msg):
         t = self._now()
@@ -193,8 +185,8 @@ _COLORS = {
     "grid": "#cccccc",
     "text": "#222222",
     "desired": "#d32f2f",
-    "actual": "#1565c0",
-    "camera": "#2e7d32",
+    "actual": "#2e7d32",
+    "ekf": "#1565c0",
     "vcmd": "#e65100",
     "wcmd": "#6a1b9a",
     "ex": "#00838f",
@@ -230,13 +222,24 @@ def run_dashboard(node: PaperDashboardNode):
 
     # Panel 1 — XY trajectory
     ax_xy = fig.add_subplot(gs[0, 0])
-    _style_ax(ax_xy, "Trajectory (X – Y)")
+    _style_ax(ax_xy, "Trajectory (X – Y) — Camera Actual")
     ax_xy.set_xlabel("x (m)")
     ax_xy.set_ylabel("y (m)")
     ax_xy.set_aspect("equal", adjustable="datalim")
-    ln_desired, = ax_xy.plot([], [], "--", color=_COLORS["desired"], lw=2, label="Desired")
-    ln_actual, = ax_xy.plot([], [], "-", color=_COLORS["actual"], lw=2, label="EKF Filtered")
-    ln_camera, = ax_xy.plot([], [], ".", color=_COLORS["camera"], ms=2.5, alpha=0.45, label="Camera")
+    ln_desired, = ax_xy.plot(
+        [], [], "--", color=_COLORS["desired"], lw=1.6, alpha=0.75,
+        zorder=1, label="Desired",
+    )
+    ln_ekf, = ax_xy.plot(
+        [], [], ":", color=_COLORS["ekf"], lw=1.3, alpha=0.70,
+        zorder=2, label="EKF (comparison)",
+    )
+    # The primary actual trajectory is the accepted, map-aligned camera pose.
+    # Connect raw samples directly; do not smooth or geometrically round them.
+    ln_actual, = ax_xy.plot(
+        [], [], "-", color=_COLORS["actual"], lw=2.4, alpha=0.95,
+        zorder=3, label="Actual (Camera AprilTag)",
+    )
     ax_xy.legend(loc="upper left", fontsize=7, facecolor=_COLORS["panel"],
                  edgecolor=_COLORS["grid"], labelcolor=_COLORS["text"])
 
@@ -291,13 +294,17 @@ def run_dashboard(node: PaperDashboardNode):
         artists = []
 
         # ---- XY trajectory ----
-        if len(node.desired_x) > 1 or len(node.filtered_x) > 1:
-            ln_desired.set_data(node.desired_x, node.desired_y)  # ideal square polygon
-            ln_actual.set_data(list(node.filtered_x), list(node.filtered_y))
-            ln_camera.set_data(list(node.camera_x), list(node.camera_y))
+        if (
+            len(node.desired_x) > 1
+            or len(node.filtered_x) > 1
+            or len(node.camera_x) > 1
+        ):
+            ln_desired.set_data(list(node.desired_x), list(node.desired_y))
+            ln_ekf.set_data(list(node.filtered_x), list(node.filtered_y))
+            ln_actual.set_data(list(node.camera_x), list(node.camera_y))
             ax_xy.relim()
             ax_xy.autoscale_view()
-            artists += [ln_desired, ln_actual, ln_camera]
+            artists += [ln_desired, ln_ekf, ln_actual]
 
         # ---- Command velocities ----
         if len(node.cmd_t) > 1:

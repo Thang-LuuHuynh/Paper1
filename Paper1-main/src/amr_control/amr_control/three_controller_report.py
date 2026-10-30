@@ -122,6 +122,31 @@ def _active_motion_mask(data):
     )
 
 
+def _common_active_duration(data_by_controller, controllers):
+    """Return the shortest plotted motion duration across controllers."""
+    import numpy as np
+
+    durations = []
+    for controller in controllers:
+        data = data_by_controller[controller]
+        t = _relative_motion_time(data)
+        active = _active_motion_mask(data) & np.isfinite(t)
+        if active.any():
+            durations.append(float(np.max(t[active])))
+    return min(durations) if durations else None
+
+
+def _common_time_mask(data, common_duration):
+    """Limit one run to the common controller-comparison interval."""
+    import numpy as np
+
+    t = _relative_motion_time(data)
+    active = _active_motion_mask(data)
+    if common_duration is not None:
+        active &= np.isfinite(t) & (t <= common_duration)
+    return t, active
+
+
 def _fresh_camera(data):
     import numpy as np
 
@@ -152,6 +177,9 @@ def _trajectory_figure(
     for controller in controllers:
         data = data_by_controller[controller]
         valid = _fresh_camera(data) & _active_motion_mask(data)
+        paused = data.get("control_paused")
+        if paused is not None:
+            valid &= ~(np.isfinite(paused) & (paused > 0.5))
         ax.plot(
             data["camera_x_local"][valid],
             data["camera_y_local"][valid],
@@ -160,6 +188,24 @@ def _trajectory_figure(
             alpha=0.92,
             label=DISPLAY[controller],
         )
+        valid_indices = np.flatnonzero(valid)
+        if valid_indices.size:
+            start_index = int(valid_indices[0])
+            ax.plot(
+                data["camera_x_local"][start_index],
+                data["camera_y_local"][start_index],
+                marker="o",
+                ms={
+                    "Backstepping": 8.0,
+                    "BSMC": 6.3,
+                    "SMC": 4.6,
+                }[controller],
+                markerfacecolor=COLORS[controller],
+                markeredgecolor="white",
+                markeredgewidth=0.7,
+                linestyle="none",
+                zorder=5,
+            )
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_aspect("equal", adjustable="datalim")
@@ -178,10 +224,12 @@ def _errors_figure(
     )
     fields = ("camera_error_ex", "camera_error_ey", "camera_error_etheta")
     labels = (r"$e_x$ (m)", r"$e_y$ (m)", r"$e_\theta$ (rad)")
+    common_duration = _common_active_duration(
+        data_by_controller, controllers
+    )
     for controller in controllers:
         data = data_by_controller[controller]
-        t = _relative_motion_time(data)
-        active = _active_motion_mask(data)
+        t, active = _common_time_mask(data, common_duration)
         for ax, field in zip(axes, fields):
             ax.plot(
                 t[active],
@@ -197,6 +245,8 @@ def _errors_figure(
         ax.grid(True, alpha=0.3, lw=0.5)
     axes[0].legend(loc="best", frameon=True, ncol=len(controllers))
     axes[-1].set_xlabel("time from motion onset (s)")
+    if common_duration is not None:
+        axes[-1].set_xlim(0.0, common_duration)
     paths = _save(fig, output, f"{trajectory}_{tag}_errors")
     plt.close(fig)
     suffixes = ("ex", "ey", "etheta")
@@ -204,8 +254,7 @@ def _errors_figure(
         fig, ax = plt.subplots(figsize=(3.5, 2.45), constrained_layout=True)
         for controller in controllers:
             data = data_by_controller[controller]
-            t = _relative_motion_time(data)
-            active = _active_motion_mask(data)
+            t, active = _common_time_mask(data, common_duration)
             ax.plot(
                 t[active],
                 data[field][active],
@@ -219,6 +268,8 @@ def _errors_figure(
         ax.set_ylabel(label)
         ax.grid(True, alpha=0.3, lw=0.5)
         ax.legend(loc="best", frameon=True, ncol=len(controllers))
+        if common_duration is not None:
+            ax.set_xlim(0.0, common_duration)
         paths += _save(
             fig, output, f"{trajectory}_{tag}_{suffix}"
         )
@@ -234,10 +285,12 @@ def _commands_figure(
     )
     fields = ("cmd_v", "cmd_w")
     labels = (r"$v_{cmd}$ (m/s)", r"$\omega_{cmd}$ (rad/s)")
+    common_duration = _common_active_duration(
+        data_by_controller, controllers
+    )
     for controller in controllers:
         data = data_by_controller[controller]
-        t = _relative_motion_time(data)
-        active = _active_motion_mask(data)
+        t, active = _common_time_mask(data, common_duration)
         for ax, field in zip(axes, fields):
             ax.plot(
                 t[active],
@@ -253,6 +306,8 @@ def _commands_figure(
         ax.grid(True, alpha=0.3, lw=0.5)
     axes[0].legend(loc="best", frameon=True, ncol=len(controllers))
     axes[-1].set_xlabel("time from motion onset (s)")
+    if common_duration is not None:
+        axes[-1].set_xlim(0.0, common_duration)
     paths = _save(fig, output, f"{trajectory}_{tag}_commands")
     plt.close(fig)
     suffixes = ("vcmd", "wcmd")
@@ -260,8 +315,7 @@ def _commands_figure(
         fig, ax = plt.subplots(figsize=(3.5, 2.45), constrained_layout=True)
         for controller in controllers:
             data = data_by_controller[controller]
-            t = _relative_motion_time(data)
-            active = _active_motion_mask(data)
+            t, active = _common_time_mask(data, common_duration)
             ax.plot(
                 t[active],
                 data[field][active],
@@ -275,6 +329,8 @@ def _commands_figure(
         ax.set_ylabel(label)
         ax.grid(True, alpha=0.3, lw=0.5)
         ax.legend(loc="best", frameon=True, ncol=len(controllers))
+        if common_duration is not None:
+            ax.set_xlim(0.0, common_duration)
         paths += _save(
             fig, output, f"{trajectory}_{tag}_{suffix}"
         )
@@ -292,6 +348,191 @@ def _event_index(data):
     return int(indices[0]) if indices.size else None
 
 
+def _disturbance_anchor_index(data, event_index):
+    """Return the start of the last pause preceding release/resume.
+
+    The manual displacement protocol records ``disturbance_event`` when the
+    controller is released.  Spatial phase alignment must instead use the
+    point at which the robot was paused for the intervention; otherwise the
+    deliberately displaced release poses would be forced onto one another.
+    """
+    import numpy as np
+
+    pause = data["control_paused"]
+    paused_before = np.flatnonzero(
+        (np.arange(len(pause)) < event_index)
+        & np.isfinite(pause)
+        & (pause > 0.5)
+    )
+    if not paused_before.size:
+        return int(event_index)
+    pause_start = int(paused_before[-1])
+    while (
+        pause_start > 0
+        and np.isfinite(pause[pause_start - 1])
+        and pause[pause_start - 1] > 0.5
+    ):
+        pause_start -= 1
+    return pause_start
+
+
+def _circle_center(data):
+    """Estimate the local-frame reference-circle centre from its extrema."""
+    import numpy as np
+
+    x = data["desired_x_local"]
+    y = data["desired_y_local"]
+    finite = np.isfinite(x) & np.isfinite(y)
+    if not finite.any():
+        return np.array([0.0, 0.0], dtype=float)
+    return np.array([
+        0.5 * (float(np.min(x[finite])) + float(np.max(x[finite]))),
+        0.5 * (float(np.min(y[finite])) + float(np.max(y[finite]))),
+    ])
+
+
+def _trajectory_start_index(data):
+    """Return the first fresh-camera sample during commanded motion."""
+    import numpy as np
+
+    valid = _fresh_camera(data) & _active_motion_mask(data)
+    paused = data.get("control_paused")
+    if paused is not None:
+        valid &= ~(np.isfinite(paused) & (paused > 0.5))
+    indices = np.flatnonzero(valid)
+    if indices.size:
+        return int(indices[0])
+    finite = np.flatnonzero(
+        np.isfinite(data["camera_x_local"])
+        & np.isfinite(data["camera_y_local"])
+    )
+    return int(finite[0]) if finite.size else 0
+
+
+def _align_circle_disturbance_phase(data_by_controller, controllers):
+    """Align both run start and intervention to the corresponding BSMC landmarks.
+
+    Raw logs and error signals are untouched.  Only local-frame XY arrays used
+    by trajectory figures are transformed.  Rotation and translation ramp
+    smoothly from the common start alignment to the intervention alignment,
+    then remain fixed.  This keeps the two comparison landmarks coincident
+    without uniformly scaling any controller trajectory.
+    """
+    import numpy as np
+
+    if any(_event_index(data_by_controller[c]) is None for c in controllers):
+        return data_by_controller, None
+
+    reference_controller = (
+        "BSMC" if "BSMC" in controllers else controllers[0]
+    )
+    reference = data_by_controller[reference_controller]
+    reference_event = _event_index(reference)
+    reference_anchor = _disturbance_anchor_index(reference, reference_event)
+    reference_start = _trajectory_start_index(reference)
+    target_center = _circle_center(reference)
+    target_vector = np.array([
+        reference["desired_x_local"][reference_anchor] - target_center[0],
+        reference["desired_y_local"][reference_anchor] - target_center[1],
+    ])
+    target_angle = math.atan2(target_vector[1], target_vector[0])
+    target_point = np.array([
+        reference["camera_x_local"][reference_anchor],
+        reference["camera_y_local"][reference_anchor],
+    ])
+    target_start = np.array([
+        reference["camera_x_local"][reference_start],
+        reference["camera_y_local"][reference_start],
+    ])
+
+    aligned = {}
+    rows = {}
+    for controller in controllers:
+        data = data_by_controller[controller]
+        event_index = _event_index(data)
+        anchor_index = _disturbance_anchor_index(data, event_index)
+        start_index = _trajectory_start_index(data)
+        center = _circle_center(data)
+        anchor_vector = np.array([
+            data["desired_x_local"][anchor_index] - center[0],
+            data["desired_y_local"][anchor_index] - center[1],
+        ])
+        source_angle = math.atan2(anchor_vector[1], anchor_vector[0])
+        rotation = target_angle - source_angle
+        cos_r = math.cos(rotation)
+        sin_r = math.sin(rotation)
+        camera_anchor = np.array([
+            data["camera_x_local"][anchor_index] - center[0],
+            data["camera_y_local"][anchor_index] - center[1],
+        ])
+        rotated_camera_anchor = np.array([
+            cos_r * camera_anchor[0] - sin_r * camera_anchor[1],
+            sin_r * camera_anchor[0] + cos_r * camera_anchor[1],
+        ]) + center
+        event_translation = target_point - rotated_camera_anchor
+        source_start = np.array([
+            data["camera_x_local"][start_index],
+            data["camera_y_local"][start_index],
+        ])
+        start_translation = target_start - source_start
+        start_t = float(data["t"][start_index])
+        anchor_t = float(data["t"][anchor_index])
+        duration = max(1e-9, anchor_t - start_t)
+        weight = np.clip((data["t"] - start_t) / duration, 0.0, 1.0)
+        point_rotation = weight * rotation
+        point_cos = np.cos(point_rotation)
+        point_sin = np.sin(point_rotation)
+        translation_x = (
+            (1.0 - weight) * start_translation[0]
+            + weight * event_translation[0]
+        )
+        translation_y = (
+            (1.0 - weight) * start_translation[1]
+            + weight * event_translation[1]
+        )
+
+        transformed = dict(data)
+        for x_field, y_field in (
+            ("desired_x_local", "desired_y_local"),
+            ("camera_x_local", "camera_y_local"),
+        ):
+            x = data[x_field] - center[0]
+            y = data[y_field] - center[1]
+            transformed[x_field] = (
+                point_cos * x - point_sin * y
+                + center[0] + translation_x
+            )
+            transformed[y_field] = (
+                point_sin * x + point_cos * y
+                + center[1] + translation_y
+            )
+        aligned[controller] = transformed
+        rows[controller] = {
+            "event_time_s": float(data["t"][event_index]),
+            "anchor_time_s": float(data["t"][anchor_index]),
+            "start_time_s": start_t,
+            "phase_rotation_deg": math.degrees(rotation),
+            "start_translation_x_m": float(start_translation[0]),
+            "start_translation_y_m": float(start_translation[1]),
+            "event_translation_x_m": float(event_translation[0]),
+            "event_translation_y_m": float(event_translation[1]),
+        }
+
+    return aligned, {
+        "reference_controller": reference_controller,
+        "method": (
+            "time-varying XY rotation/translation from common run start "
+            "to common intervention phase; fixed after intervention"
+        ),
+        "anchor": "start of the control pause preceding release/resume",
+        "common_start_x_m": float(target_start[0]),
+        "common_start_y_m": float(target_start[1]),
+        "common_anchor_x_m": float(target_point[0]),
+        "common_anchor_y_m": float(target_point[1]),
+        "controllers": rows,
+    }
+
+
 def _disturbance_baseline(data, event_index, error):
     """Return nominal pre-disturbance baseline and its endpoint.
 
@@ -303,20 +544,9 @@ def _disturbance_baseline(data, event_index, error):
 
     event_t = float(data["t"][event_index])
     baseline_end_t = event_t
-    pause = data["control_paused"]
-    paused_before = np.flatnonzero(
-        (np.arange(len(pause)) < event_index)
-        & np.isfinite(pause)
-        & (pause > 0.5)
-    )
-    if paused_before.size:
-        pause_start = int(paused_before[-1])
-        while (
-            pause_start > 0
-            and np.isfinite(pause[pause_start - 1])
-            and pause[pause_start - 1] > 0.5
-        ):
-            pause_start -= 1
+    anchor_index = _disturbance_anchor_index(data, event_index)
+    if anchor_index != event_index:
+        pause_start = anchor_index
         baseline_end_t = float(data["t"][pause_start])
     pre = (
         (data["t"] >= baseline_end_t - 3.0)
@@ -328,7 +558,8 @@ def _disturbance_baseline(data, event_index, error):
 
 
 def _disturbance_figures(
-    plt, output, data_by_controller, controllers, tag
+    plt, output, data_by_controller, controllers, tag,
+    trajectory_data_by_controller=None, phase_alignment=None,
 ):
     import numpy as np
 
@@ -376,8 +607,9 @@ def _disturbance_figures(
     outputs += _save(fig, output, f"circle_{tag}_disturbance_recovery")
     plt.close(fig)
 
+    spatial_data = trajectory_data_by_controller or data_by_controller
     fig, ax = plt.subplots(figsize=(3.5, 3.2), constrained_layout=True)
-    reference = data_by_controller.get("BSMC", data_by_controller[controllers[0]])
+    reference = spatial_data.get("BSMC", spatial_data[controllers[0]])
     ax.plot(
         reference["desired_x_local"],
         reference["desired_y_local"],
@@ -387,14 +619,19 @@ def _disturbance_figures(
         label="Reference",
     )
     for controller in controllers:
-        data = data_by_controller[controller]
-        event_index = _event_index(data)
-        event_t = float(data["t"][event_index])
+        raw_data = data_by_controller[controller]
+        data = spatial_data[controller]
+        event_index = _event_index(raw_data)
+        anchor_index = _disturbance_anchor_index(raw_data, event_index)
+        event_t = float(raw_data["t"][event_index])
         window = (
-            (data["t"] >= event_t - 3.0)
-            & (data["t"] <= event_t + 15.0)
+            (raw_data["t"] >= raw_data["t"][anchor_index] - 3.0)
+            & (raw_data["t"] <= event_t + 15.0)
             & _fresh_camera(data)
         )
+        paused = raw_data.get("control_paused")
+        if paused is not None:
+            window &= ~(np.isfinite(paused) & (paused > 0.5))
         ax.plot(
             data["camera_x_local"][window],
             data["camera_y_local"][window],
@@ -402,28 +639,24 @@ def _disturbance_figures(
             lw=1.1,
             label=DISPLAY[controller],
         )
-        if window.any():
-            nearest = int(np.nanargmin(np.abs(data["t"] - event_t)))
-            ax.plot(
-                data["camera_x_local"][nearest],
-                data["camera_y_local"][nearest],
-                marker="o",
-                ms=4,
-                color=COLORS[controller],
-                linestyle="none",
-            )
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True, alpha=0.3, lw=0.5)
-    ax.legend(loc="best", frameon=True)
+    ax.legend(loc="best", frameon=True, fontsize=7)
     outputs += _save(
         fig, output, f"circle_{tag}_disturbance_trajectory"
     )
     plt.close(fig)
 
     path = output / f"circle_{tag}_disturbance_alignment.json"
-    path.write_text(json.dumps(disturbance_rows, indent=2), encoding="utf-8")
+    alignment_record = {
+        "temporal_recovery_alignment": disturbance_rows,
+        "spatial_phase_alignment": phase_alignment,
+    }
+    path.write_text(
+        json.dumps(alignment_record, indent=2), encoding="utf-8"
+    )
     outputs.append(path)
     return outputs
 
@@ -472,8 +705,16 @@ def refresh_three_controller_assets(
             controller: _arrays(selected[controller])
             for controller in controllers
         }
+        trajectory_data = data_by_controller
+        phase_alignment = None
+        if trajectory == "circle":
+            trajectory_data, phase_alignment = (
+                _align_circle_disturbance_phase(
+                    data_by_controller, controllers
+                )
+            )
         generated += _trajectory_figure(
-            plt, output, trajectory, data_by_controller, controllers, tag
+            plt, output, trajectory, trajectory_data, controllers, tag
         )
         generated += _errors_figure(
             plt, output, trajectory, data_by_controller, controllers, tag
@@ -483,7 +724,9 @@ def refresh_three_controller_assets(
         )
         if trajectory == "circle":
             generated += _disturbance_figures(
-                plt, output, data_by_controller, controllers, tag
+                plt, output, data_by_controller, controllers, tag,
+                trajectory_data_by_controller=trajectory_data,
+                phase_alignment=phase_alignment,
             )
         provenance[trajectory] = {
             controller: {
@@ -528,7 +771,11 @@ def refresh_three_controller_assets(
                     "camera_freshness_limit_s": 0.30,
                     "processing": (
                         "camera-derived errors; rigid local-frame alignment; "
-                        "no smoothing"
+                        "controller time series truncated to the shortest "
+                        "active-motion duration; "
+                        "Circle disturbance trajectories phase-normalized "
+                        "between common start and BSMC intervention "
+                        "landmarks; no smoothing"
                     ),
                     "runs": provenance,
                 },
